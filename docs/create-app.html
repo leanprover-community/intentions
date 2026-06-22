@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create a claim-bot GitHub App</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #1f2328; }
+  h1 { font-size: 1.4rem; }
+  code { background: #f6f8fa; padding: .1em .3em; border-radius: 4px; }
+  input[type=text] { font: inherit; padding: .4rem .5rem; width: 16rem; }
+  button { font: inherit; padding: .5rem 1rem; margin-top: 1rem; cursor: pointer;
+           background: #1f883d; color: #fff; border: 0; border-radius: 6px; }
+  ol { padding-left: 1.2rem; }
+  .muted { color: #57606a; font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>Create a claim-bot GitHub App</h1>
+<p>This pre-fills a GitHub App with exactly the permissions claim-bot needs
+(Issues + Pull requests read/write, organization Projects read/write, no webhook).
+Enter the account that owns the board and the repo, then click create.</p>
+
+<form id="f" method="post">
+  <input type="hidden" name="manifest" id="manifest">
+  <label>Organization (or leave blank for your personal account):<br>
+    <input type="text" id="org" placeholder="FormalFrontier" autofocus>
+  </label>
+  <br>
+  <button type="submit">Create the App →</button>
+</form>
+
+<p class="muted">GitHub opens its App-creation page with everything filled in. Click
+<strong>Create GitHub App</strong>, then: generate a private key, copy the App ID, and
+install the App on the repo that holds your issues. App names are globally unique, so adjust
+the suggested name if it's taken.</p>
+
+<h2>After creating</h2>
+<ol>
+  <li>On the new App's page, <strong>Generate a private key</strong> (downloads a <code>.pem</code>).</li>
+  <li>Note the <strong>App ID</strong>.</li>
+  <li><strong>Install App</strong> on the repository that holds your issues.</li>
+  <li>In that repo → Settings → Secrets and variables → Actions: add variable
+      <code>CLAIM_BOT_APP_ID</code> and secret <code>CLAIM_BOT_APP_PRIVATE_KEY</code>.</li>
+</ol>
+<p class="muted"><a href="https://github.com/leanprover-community/claim-bot#readme">← back to the claim-bot README</a></p>
+
+<script>
+  function manifest(org) {
+    return {
+      name: org ? (org + " claim-bot") : "claim-bot",
+      url: "https://github.com/leanprover-community/claim-bot",
+      hook_attributes: { active: false },
+      public: false,
+      default_events: [],
+      default_permissions: {
+        issues: "write",
+        pull_requests: "write",
+        organization_projects: "write"
+      }
+    }
+  }
+  const form = document.getElementById('f')
+  form.addEventListener('submit', function () {
+    const org = document.getElementById('org').value.trim()
+    document.getElementById('manifest').value = JSON.stringify(manifest(org))
+    form.action = org
+      ? "https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new?state=claim-bot"
+      : "https://github.com/settings/apps/new?state=claim-bot"
+  })
+</script>
+</body>
+</html>

@@ -45,28 +45,39 @@ On your **Projects v2** board, make sure you have:
 
 Add issues to the board and set their `Status` to `Unclaimed` — those are the claimable tasks.
 
-### 2. Create a GitHub App
+### 2. Authenticate (~5 minutes)
 
 The bot needs to read/write the project and assign/comment on issues. The default
-`GITHUB_TOKEN` **cannot** write org Projects v2, so it authenticates as a GitHub App (a PAT
-works too — see below). With an App, the bot acts under its own `…[bot]` identity.
+`GITHUB_TOKEN` **cannot** write org Projects v2, so you give it one of these. Pick **A** for
+a clean `…[bot]` identity, or **B** if you just want something quick.
 
-Create an App (org → **Settings → Developer settings → GitHub Apps → New**) with:
+#### A. GitHub App (recommended)
 
-- **Repository permissions:** Issues → Read and write; Pull requests → Read and write.
-- **Organization permissions:** Projects → Read and write. *(Account permissions → Projects
-  if the board is user-owned.)*
+1. **One click:** open **<https://leanprover-community.github.io/claim-bot/create-app.html>**,
+   enter your org, and create the App — permissions and webhook-off are pre-filled for you.
+2. On the new App: **generate a private key** (`.pem`), note the **App ID**, and **install**
+   it on the repo with your issues.
+3. In that repo → Settings → Secrets and variables → Actions, add:
+   - variable **`CLAIM_BOT_APP_ID`** = the App ID,
+   - secret **`CLAIM_BOT_APP_PRIVATE_KEY`** = the `.pem` contents.
 
-**Install** it on the repo with your issues, generate a **private key**, then set:
+#### B. Fine-grained PAT
 
-- a variable `CLAIM_BOT_APP_ID` (the App's numeric ID), and
-- a secret `CLAIM_BOT_APP_PRIVATE_KEY` (the downloaded `.pem` contents).
+Create a fine-grained PAT with **Issues: R/W**, **Pull requests: R/W**, and **Projects: R/W**
+(for an org-owned board the Projects permission is under *Organization permissions*, and the
+token's resource owner must be that org). Add it as secret **`CLAIM_BOT_TOKEN`**, and in the
+workflows below pass `project-token: ${{ secrets.CLAIM_BOT_TOKEN }}` instead of the `app-id` /
+`app-private-key` lines.
 
-> Prefer a PAT? Set a secret `CLAIM_BOT_TOKEN` (fine-grained PAT with the three permissions
-> above; org-owned boards need the Projects permission under *Organization*). Then use the
-> `project-token:` secret in the workflows below instead of the App inputs.
+<details><summary>Setting up the App by hand instead of the one-click form</summary>
 
-See [examples/board-setup.md](examples/board-setup.md) for the full details.
+Org → **Settings → Developer settings → GitHub Apps → New** — webhook **off**;
+**Repository permissions:** Issues R/W, Pull requests R/W; **Organization permissions:**
+Projects R/W (or *Account permissions → Projects* for a user-owned board). Then install,
+generate a key, and set the variable/secret as in step 3 above.
+</details>
+
+See [examples/board-setup.md](examples/board-setup.md) for full details.
 
 ### 3. Add the command workflow
 
