@@ -13,5 +13,8 @@ jobs:
       project-title: "My Project"   # the exact title of your Projects v2 board
       default-ttl: "30d"            # set to "none" to disable expiry entirely
       max-ttl: "90d"
+      app-id: ${{ vars.CLAIM_BOT_APP_ID }}
     secrets:
-      project-token: ${{ secrets.CLAIM_BOT_TOKEN }}
+      app-private-key: ${{ secrets.CLAIM_BOT_APP_PRIVATE_KEY }}
+      # Or, instead of a GitHub App, use a PAT:
+      # project-token: ${{ secrets.CLAIM_BOT_TOKEN }}

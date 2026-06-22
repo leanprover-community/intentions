@@ -40,9 +40,18 @@ on:
         required: false
         type: string
         default: grace
+      app-id:
+        description: GitHub App ID. If set, a short-lived installation token is minted and used.
+        required: false
+        type: string
+        default: ''
     secrets:
+      app-private-key:
+        description: GitHub App private key (PEM). Required when app-id is set.
+        required: false
       project-token:
-        required: true
+        description: A PAT to use instead of a GitHub App.
+        required: false
 
 jobs:
   sweep:
@@ -53,11 +62,18 @@ jobs:
       cancel-in-progress: false
     permissions: {}
     steps:
+      - id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
       # Pinned to the major tag; this reusable workflow and the action are released together.
       - uses: leanprover-community/claim-bot@v1
         with:
           mode: sweep
-          project-token: ${{ secrets.project-token }}
+          project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
           project-title: ${{ inputs.project-title }}
           status-field: ${{ inputs.status-field }}
           status-unclaimed: ${{ inputs.status-unclaimed }}

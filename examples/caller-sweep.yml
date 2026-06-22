@@ -17,5 +17,8 @@ jobs:
       default-ttl: "30d"
       expire-in-progress: false
       backfill-legacy: "grace"
+      app-id: ${{ vars.CLAIM_BOT_APP_ID }}
     secrets:
-      project-token: ${{ secrets.CLAIM_BOT_TOKEN }}
+      app-private-key: ${{ secrets.CLAIM_BOT_APP_PRIVATE_KEY }}
+      # Or, instead of a GitHub App, use a PAT:
+      # project-token: ${{ secrets.CLAIM_BOT_TOKEN }}

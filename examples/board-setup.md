@@ -26,17 +26,34 @@ used (not a Date field) so hour-granularity TTLs are representable.
 
 Add issues to the board and set their `Status` to `Unclaimed`. Each such issue is claimable.
 
-## 4. Token
+## 4. Authentication
 
-Provide a secret `CLAIM_BOT_TOKEN` to the caller workflows. It must be able to read/write the
-project and assign/comment on issues:
+The bot needs to read/write the project and assign/comment on issues. The default
+`GITHUB_TOKEN` **cannot** write org-level Projects v2, so a separate credential is required.
 
-- **GitHub App (recommended for orgs):** install an App on the repo/org with
-  `Projects: read & write`, `Issues: read & write`, `Pull requests: read & write`, and mint an
-  installation token. Org App tokens avoid the SAML pitfalls of personal tokens.
-- **Fine-grained PAT (simpler for personal repos):** scopes `Projects: read & write`,
-  `Issues: read & write`, `Pull requests: read & write`. For an org with SAML SSO, the PAT
-  must be SAML-authorized for that org.
+### GitHub App (recommended)
 
-The default `GITHUB_TOKEN` **cannot** write org-level Projects v2, which is why a separate
-token is required.
+The bot acts under its own `…[bot]` identity, the token is short-lived (minted per run by
+`actions/create-github-app-token`), and there's no SAML/expiry hassle.
+
+1. Org → **Settings → Developer settings → GitHub Apps → New GitHub App**.
+2. Permissions:
+   - **Repository permissions:** Issues → Read and write; Pull requests → Read and write.
+   - **Organization permissions:** Projects → Read and write. *(Or Account permissions →
+     Projects, if the board is user-owned.)*
+3. Create the App, **Install** it on the repository that holds your issues, and **generate a
+   private key** (downloads a `.pem`).
+4. In that repository (Settings → Secrets and variables → Actions):
+   - add a **variable** `CLAIM_BOT_APP_ID` = the App's numeric ID;
+   - add a **secret** `CLAIM_BOT_APP_PRIVATE_KEY` = the full contents of the `.pem`.
+
+The caller workflows pass `app-id` + `app-private-key`; the bot mints an org-scoped
+installation token at runtime.
+
+### Fine-grained PAT (alternative)
+
+A fine-grained PAT with `Issues: Read and write`, `Pull requests: Read and write`, and
+`Projects: Read and write`. For an **org-owned** board the Projects permission must be set
+under **Organization permissions** (and the token's resource owner must be that org); for an
+org with SAML SSO the token must be SAML-authorized. Store it as a secret `CLAIM_BOT_TOKEN`
+and pass it to the workflows via `project-token:` instead of the App inputs.

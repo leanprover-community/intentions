@@ -45,18 +45,28 @@ On your **Projects v2** board, make sure you have:
 
 Add issues to the board and set their `Status` to `Unclaimed` — those are the claimable tasks.
 
-### 2. Create a token
+### 2. Create a GitHub App
 
-Add a repository secret `CLAIM_BOT_TOKEN` that can read/write the project and assign/comment
-on issues. The default `GITHUB_TOKEN` **cannot** write org Projects v2, so a separate token
-is required:
+The bot needs to read/write the project and assign/comment on issues. The default
+`GITHUB_TOKEN` **cannot** write org Projects v2, so it authenticates as a GitHub App (a PAT
+works too — see below). With an App, the bot acts under its own `…[bot]` identity.
 
-- **GitHub App installation token (recommended for orgs)** with `Projects: read & write`,
-  `Issues: read & write`, `Pull requests: read & write`.
-- **Fine-grained PAT (fine for personal repos)** with the same three permissions; for an org
-  with SAML SSO it must be SAML-authorized.
+Create an App (org → **Settings → Developer settings → GitHub Apps → New**) with:
 
-See [examples/board-setup.md](examples/board-setup.md) for details.
+- **Repository permissions:** Issues → Read and write; Pull requests → Read and write.
+- **Organization permissions:** Projects → Read and write. *(Account permissions → Projects
+  if the board is user-owned.)*
+
+**Install** it on the repo with your issues, generate a **private key**, then set:
+
+- a variable `CLAIM_BOT_APP_ID` (the App's numeric ID), and
+- a secret `CLAIM_BOT_APP_PRIVATE_KEY` (the downloaded `.pem` contents).
+
+> Prefer a PAT? Set a secret `CLAIM_BOT_TOKEN` (fine-grained PAT with the three permissions
+> above; org-owned boards need the Projects permission under *Organization*). Then use the
+> `project-token:` secret in the workflows below instead of the App inputs.
+
+See [examples/board-setup.md](examples/board-setup.md) for the full details.
 
 ### 3. Add the command workflow
 
@@ -74,8 +84,9 @@ jobs:
       project-title: "My Project"   # exact title of your Projects v2 board
       default-ttl: "30d"            # use "none" to disable expiry entirely
       max-ttl: "90d"
+      app-id: ${{ vars.CLAIM_BOT_APP_ID }}
     secrets:
-      project-token: ${{ secrets.CLAIM_BOT_TOKEN }}
+      app-private-key: ${{ secrets.CLAIM_BOT_APP_PRIVATE_KEY }}
 ```
 
 ### 4. Add the sweep workflow
@@ -94,8 +105,9 @@ jobs:
     with:
       project-title: "My Project"
       default-ttl: "30d"
+      app-id: ${{ vars.CLAIM_BOT_APP_ID }}
     secrets:
-      project-token: ${{ secrets.CLAIM_BOT_TOKEN }}
+      app-private-key: ${{ secrets.CLAIM_BOT_APP_PRIVATE_KEY }}
 ```
 
 That's it. Contributors now claim tasks by commenting `claim`.
