@@ -43,8 +43,9 @@ export async function handlePropose(deps: Deps, pr: number): Promise<void> {
   }
 
   await linkPullToIssue(octokit, owner, repo, pr, issueNumber, pull.body)
-  await setStatus(octokit, ctx, item.itemId, inProgressId)
 
+  // Refresh the expiry before flipping status, so the item is never In Progress with a
+  // stale expiry (matters when expire-in-progress is enabled).
   let expiryNote = ''
   if (expiryEnabled(cfg)) {
     const res = resolveExpiry('', new Date(), cfg.defaultTtl, cfg.maxTtlMs) // refresh to default from now
@@ -53,5 +54,6 @@ export async function handlePropose(deps: Deps, pr: number): Promise<void> {
       expiryNote = ` Claim refreshed — expires **${formatExpiry(res.expiry)}**.`
     }
   }
+  await setStatus(octokit, ctx, item.itemId, inProgressId)
   await comment(octokit, owner, repo, issueNumber, `@${actor} linked PR #${pr}; task moved to **${cfg.statusInProgress}**.${expiryNote}`)
 }

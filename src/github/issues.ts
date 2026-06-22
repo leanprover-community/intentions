@@ -42,17 +42,23 @@ export async function getPull(octokit: Octokit, owner: string, repo: string, pul
   }
 }
 
-/** Append "Closes #N" to a PR body if absent. */
+// A hidden, issue-specific marker so we only ever touch our own line, never user prose.
+const closesMarker = (issueNumber: number): string => `<!-- claim-bot:closes #${issueNumber} -->`
+
+/** Append a "Closes #N" line (with our marker) to a PR body if not already present. */
 export async function linkPullToIssue(octokit: Octokit, owner: string, repo: string, pull_number: number, issueNumber: number, body: string): Promise<void> {
-  const marker = `Closes #${issueNumber}`
-  if (new RegExp(`closes #${issueNumber}\\b`, 'i').test(body)) return
-  const next = `${body.replace(/\s+$/, '')}\n\n${marker}`.replace(/^\n+/, '')
+  const marker = closesMarker(issueNumber)
+  if (body.includes(marker)) return
+  const next = `${body.replace(/\s+$/, '')}\n\nCloses #${issueNumber} ${marker}`.replace(/^\n+/, '')
   await octokit.rest.pulls.update({ owner, repo, pull_number, body: next })
 }
 
-/** Remove a "Closes #N" line from a PR body if present. */
+/** Remove only the bot's own "Closes #N" marker line from a PR body. */
 export async function unlinkPullFromIssue(octokit: Octokit, owner: string, repo: string, pull_number: number, issueNumber: number, body: string): Promise<void> {
-  const next = body.replace(new RegExp(`\\n*closes #${issueNumber}\\b[^\\n]*`, 'i'), '').replace(/\s+$/, '')
-  if (next === body.replace(/\s+$/, '')) return
+  const marker = closesMarker(issueNumber)
+  if (!body.includes(marker)) return
+  const next = body
+    .replace(new RegExp(`\\n*[^\\n]*${marker}[^\\n]*`), '')
+    .replace(/\s+$/, '')
   await octokit.rest.pulls.update({ owner, repo, pull_number, body: next })
 }

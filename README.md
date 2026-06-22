@@ -8,21 +8,6 @@ blocking everyone forever.
 This is a single, reusable GitHub Action — projects opt in with a couple of small workflow
 files, no copy-pasted scripts.
 
-## Credits
-
-This bot is a reimplementation of, and owes everything to, the claim/dashboard workflow
-originally designed and built by **[Pietro Monticone](https://github.com/pitmonticone)** and
-**[Shreyas Srinivas](https://github.com/Shreyas4991)** for the
-[Equational Theories Project](https://github.com/teorth/equational_theories), and
-subsequently deployed by Pietro to
-[FLT](https://github.com/ImperialCollegeLondon/FLT),
-[PrimeNumberTheorem+](https://github.com/AlexKontorovich/PrimeNumberTheoremAnd), and
-[∞-Cosmos](https://github.com/emilyriehl/infinity-cosmos). The `claim` / `disclaim` /
-`propose PR` / `withdraw PR` vocabulary and the board-driven workflow are theirs; this repo
-repackages that idea as a maintained, reusable action and adds claim expiry. Thank you both.
-
-Contributions welcome — see [Development](#development).
-
 ## How it works
 
 Comment on an issue that's on the project board:
@@ -44,6 +29,77 @@ helpful message.
 The board's `Status` field moves `Unclaimed → Claimed → In Progress`, and a scheduled
 **sweep** returns expired claims to `Unclaimed`.
 
+## Adoption
+
+A four-step recipe. (To adopt without any expiry behavior, see step 2's note — you can skip
+the `Claim Expires` field and the sweep workflow entirely.)
+
+### 1. Set up the board
+
+On your **Projects v2** board, make sure you have:
+
+- a **single-select** field `Status` with options `Unclaimed`, `Claimed`, `In Progress`
+  (add `In Review` / `Completed` too if you use them);
+- a **Text** field `Claim Expires` (the bot stores each claim's expiry here as an ISO 8601
+  UTC datetime). *Skip this if you set `default-ttl: none`.*
+
+Add issues to the board and set their `Status` to `Unclaimed` — those are the claimable tasks.
+
+### 2. Create a token
+
+Add a repository secret `CLAIM_BOT_TOKEN` that can read/write the project and assign/comment
+on issues. The default `GITHUB_TOKEN` **cannot** write org Projects v2, so a separate token
+is required:
+
+- **GitHub App installation token (recommended for orgs)** with `Projects: read & write`,
+  `Issues: read & write`, `Pull requests: read & write`.
+- **Fine-grained PAT (fine for personal repos)** with the same three permissions; for an org
+  with SAML SSO it must be SAML-authorized.
+
+See [examples/board-setup.md](examples/board-setup.md) for details.
+
+### 3. Add the command workflow
+
+Create `.github/workflows/claim.yml`:
+
+```yaml
+name: Claim bot
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  claim:
+    uses: leanprover-community/claim-bot/.github/workflows/claim-commands.yml@v1
+    with:
+      project-title: "My Project"   # exact title of your Projects v2 board
+      default-ttl: "30d"            # use "none" to disable expiry entirely
+      max-ttl: "90d"
+    secrets:
+      project-token: ${{ secrets.CLAIM_BOT_TOKEN }}
+```
+
+### 4. Add the sweep workflow
+
+Create `.github/workflows/claim-sweep.yml` (skip this if `default-ttl: none`):
+
+```yaml
+name: Claim bot sweep
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # tighter (e.g. "*/15 * * * *") if you use short TTLs
+  workflow_dispatch: {}
+jobs:
+  sweep:
+    uses: leanprover-community/claim-bot/.github/workflows/claim-sweep.yml@v1
+    with:
+      project-title: "My Project"
+      default-ttl: "30d"
+    secrets:
+      project-token: ${{ secrets.CLAIM_BOT_TOKEN }}
+```
+
+That's it. Contributors now claim tasks by commenting `claim`.
+
 ## Expiry: defaults, limits, and opting out
 
 - `default-ttl` (default `30d`) — applied to a bare `claim`.
@@ -56,14 +112,6 @@ The board's `Status` field moves `Unclaimed → Claimed → In Progress`, and a 
 > minutes), so a `1h` claim is released at *next sweep ≥ expiry*, not on the minute. If you
 > rely on short TTLs, run the sweep more often (e.g. `*/15 * * * *`). An explicit `disclaim`
 > always releases immediately.
-
-## Adoption
-
-1. Set up the board and a token — see [examples/board-setup.md](examples/board-setup.md).
-2. Add [examples/caller-claim.yml](examples/caller-claim.yml) as `.github/workflows/claim.yml`.
-3. (If using expiry) add [examples/caller-sweep.yml](examples/caller-sweep.yml) as
-   `.github/workflows/claim-sweep.yml`.
-4. Set the `CLAIM_BOT_TOKEN` secret (GitHub App installation token recommended for orgs).
 
 ## Configuration
 
@@ -83,10 +131,10 @@ All inputs (set on the reusable workflows):
 
 ## Migrating from the original four-file bot
 
-Replace the per-project `01-claim-issue.yml` … `04-withdraw-pr.yml` with the two caller
-workflows above (one PR). The command vocabulary is unchanged, so contributors notice
-nothing except that claims now expire. To preserve the old "claims never expire" behavior,
-set `default-ttl: none`. Existing open claims (which have no recorded expiry) are handled by
+Replace the per-project `01-claim-issue.yml` … `04-withdraw-pr.yml` with the two workflows
+above (one PR). The command vocabulary is unchanged, so contributors notice nothing except
+that claims now expire. To preserve the old "claims never expire" behavior, set
+`default-ttl: none`. Existing open claims (which have no recorded expiry) are handled by
 `backfill-legacy` — the default `grace` gives them `now + default-ttl` on first sweep rather
 than expiring them immediately.
 
@@ -103,7 +151,20 @@ npm run build        # compiles src/ into the committed dist/ via @vercel/ncc
 ```
 
 The action runs from `dist/`, which is **committed**. CI fails if `dist/` is out of date, so
-always `npm run build` and commit the result with any source change.
+always `npm run build` and commit the result with any source change. Contributions welcome.
+
+## Credits
+
+This bot is a reimplementation of, and owes everything to, the claim/dashboard workflow
+originally designed and built by **[Pietro Monticone](https://github.com/pitmonticone)** and
+**[Shreyas Srinivas](https://github.com/Shreyas4991)** for the
+[Equational Theories Project](https://github.com/teorth/equational_theories), and
+subsequently deployed by Pietro to
+[FLT](https://github.com/ImperialCollegeLondon/FLT),
+[PrimeNumberTheorem+](https://github.com/AlexKontorovich/PrimeNumberTheoremAnd), and
+[∞-Cosmos](https://github.com/emilyriehl/infinity-cosmos). The `claim` / `disclaim` /
+`propose PR` / `withdraw PR` vocabulary and the board-driven workflow are theirs; this repo
+repackages that idea as a maintained, reusable action and adds claim expiry. Thank you both.
 
 ## License
 

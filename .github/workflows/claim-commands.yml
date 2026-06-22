@@ -40,11 +40,6 @@ on:
         required: false
         type: string
         default: 90d
-      claim-bot-ref:
-        description: Version of leanprover-community/claim-bot to run.
-        required: false
-        type: string
-        default: v1
     secrets:
       project-token:
         required: true
@@ -60,7 +55,8 @@ jobs:
       cancel-in-progress: false
     permissions: {}
     steps:
-      - uses: leanprover-community/claim-bot@${{ inputs.claim-bot-ref }}
+      # Pinned to the major tag; this reusable workflow and the action are released together.
+      - uses: leanprover-community/claim-bot@v1
         with:
           mode: command
           project-token: ${{ secrets.project-token }}

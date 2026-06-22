@@ -85,6 +85,13 @@ async function processCandidate(
   if (!c.expiryText) {
     if (cfg.backfillLegacy === 'ignore') return
     if (cfg.backfillLegacy === 'grace') {
+      // Compare-and-swap: only backfill if the item is still Claimed-with-empty-expiry and
+      // the assignees are unchanged, so we don't clobber a fresh claim/renew that raced us.
+      const fresh = await getIssueItem(octokit, owner, repo, c.issueNumber, ctx)
+      if (!fresh || fresh.itemId !== c.itemId) return
+      if (fresh.statusOptionId !== c.statusOptionId || fresh.expiryText) return
+      const assignees = await getAssignees(octokit, owner, repo, c.issueNumber)
+      if (!sameSet(assignees, c.assignees)) return
       const expiry = new Date(now.getTime() + (cfg.defaultTtl.disabled ? 30 * MS_PER_DAY : cfg.defaultTtl.ms))
       await setExpiry(octokit, ctx, c.itemId, toStorage(expiry))
       onBackfill()

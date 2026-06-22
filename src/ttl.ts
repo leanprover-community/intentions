@@ -65,9 +65,14 @@ export function parseTtlSetting(text: string): TtlSetting {
  */
 export function parseInstant(text: string): Date | null {
   const t = text.trim()
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+  const dateOnly = t.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (dateOnly) {
+    const [, y, mo, da] = dateOnly.map(Number)
     const d = new Date(`${t}T23:59:59.999Z`)
-    return Number.isNaN(d.getTime()) ? null : d
+    if (Number.isNaN(d.getTime())) return null
+    // Reject calendar-invalid dates that JS would otherwise roll over (e.g. 2026-02-30).
+    if (d.getUTCFullYear() !== y || d.getUTCMonth() + 1 !== mo || d.getUTCDate() !== da) return null
+    return d
   }
   // Full ISO 8601 datetime (require a time component to avoid locale-dependent parsing).
   if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(t)) {

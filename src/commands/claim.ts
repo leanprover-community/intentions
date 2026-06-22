@@ -78,9 +78,11 @@ export async function handleClaim(deps: Deps, expiryArg: string): Promise<void> 
     return
   }
 
-  // Fail-closed order: status + expiry first, then assignment, then the human comment.
-  await setStatus(octokit, ctx, item.itemId, claimedId)
+  // Fail-closed order: write the expiry BEFORE flipping to Claimed, so the item is never
+  // observable as Claimed-with-empty-expiry (which a sweep could misread as a legacy claim).
+  // Then status, then assignment, then the human comment.
   await setExpiry(octokit, ctx, item.itemId, toStorage(res.expiry))
+  await setStatus(octokit, ctx, item.itemId, claimedId)
   await assign(octokit, owner, repo, issueNumber, actor)
 
   const lines = [`@${actor} you've claimed this task — it expires **${formatExpiry(res.expiry)}**.`]

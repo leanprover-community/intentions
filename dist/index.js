@@ -31754,9 +31754,16 @@ function parseTtlSetting(text) {
  */
 function parseInstant(text) {
     const t = text.trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+    const dateOnly = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (dateOnly) {
+        const [, y, mo, da] = dateOnly.map(Number);
         const d = new Date(`${t}T23:59:59.999Z`);
-        return Number.isNaN(d.getTime()) ? null : d;
+        if (Number.isNaN(d.getTime()))
+            return null;
+        // Reject calendar-invalid dates that JS would otherwise roll over (e.g. 2026-02-30).
+        if (d.getUTCFullYear() !== y || d.getUTCMonth() + 1 !== mo || d.getUTCDate() !== da)
+            return null;
+        return d;
     }
     // Full ISO 8601 datetime (require a time component to avoid locale-dependent parsing).
     if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(t)) {
@@ -31949,7 +31956,8 @@ async function loadFields(octokit, projectId, statusFieldName, expiryFieldName) 
             nodes{
               __typename
               ... on ProjectV2FieldCommon { id name }
-              ... on ProjectV2SingleSelectField { id name options { id name } }
+              ... on ProjectV2Field { dataType }
+              ... on ProjectV2SingleSelectField { options { id name } }
             }
             pageInfo{ hasNextPage endCursor }
           }
@@ -31958,22 +31966,29 @@ async function loadFields(octokit, projectId, statusFieldName, expiryFieldName) 
         nodes.push(...res.node.fields.nodes);
         cursor = res.node.fields.pageInfo.hasNextPage ? res.node.fields.pageInfo.endCursor : null;
     } while (cursor);
-    const status = nodes.find((n) => n.name === statusFieldName && n.options);
-    if (!status)
-        throw new Error(`Project has no single-select field named ${JSON.stringify(statusFieldName)}.`);
+    const status = nodes.find((n) => n.name === statusFieldName && n.__typename === 'ProjectV2SingleSelectField');
+    if (!status) {
+        const named = nodes.find((n) => n.name === statusFieldName);
+        throw new Error(named
+            ? `Field ${JSON.stringify(statusFieldName)} is a ${named.__typename}, not a single-select field.`
+            : `Project has no single-select field named ${JSON.stringify(statusFieldName)}.`);
+    }
     const statusOptionIdByName = new Map();
     const statusNameById = new Map();
     for (const o of status.options ?? []) {
         statusOptionIdByName.set(o.name.toLowerCase(), o.id);
         statusNameById.set(o.id, o.name);
     }
+    // The expiry field, if present, must be a Text field (we store an ISO datetime string).
+    let expiryFieldId = null;
     const expiry = nodes.find((n) => n.name === expiryFieldName);
-    return {
-        statusFieldId: status.id,
-        statusOptionIdByName,
-        statusNameById,
-        expiryFieldId: expiry ? expiry.id : null,
-    };
+    if (expiry) {
+        if (expiry.__typename !== 'ProjectV2Field' || expiry.dataType !== 'TEXT') {
+            throw new Error(`Expiry field ${JSON.stringify(expiryFieldName)} must be a Text field, but it is ${expiry.dataType ?? expiry.__typename}.`);
+        }
+        expiryFieldId = expiry.id;
+    }
+    return { statusFieldId: status.id, statusOptionIdByName, statusNameById, expiryFieldId };
 }
 function readItemState(itemId, fieldValues, statusFieldId, expiryFieldId) {
     let statusOptionId = null;
@@ -31989,7 +32004,7 @@ function readItemState(itemId, fieldValues, statusFieldId, expiryFieldId) {
     return { itemId, statusOptionId, statusName: null, expiryText };
 }
 const ITEM_FIELD_VALUES = `
-  fieldValues(first:50){
+  fieldValues(first:100){
     nodes{
       __typename
       ... on ProjectV2ItemFieldSingleSelectValue { optionId field { ... on ProjectV2FieldCommon { id name } } }
@@ -31999,23 +32014,31 @@ const ITEM_FIELD_VALUES = `
   }`;
 /** Find the project item for an issue (matching our project), with its status + expiry. */
 async function getIssueItem(octokit, owner, repo, issueNumber, ctx) {
-    const res = await octokit.graphql(`query($owner:String!,$repo:String!,$num:Int!){
-      repository(owner:$owner,name:$repo){
-        issue(number:$num){
-          projectItems(first:20){
-            nodes{ id project{ id } ${ITEM_FIELD_VALUES} }
+    let cursor = null;
+    do {
+        const res = await octokit.graphql(`query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
+        repository(owner:$owner,name:$repo){
+          issue(number:$num){
+            projectItems(first:50,after:$cursor){
+              nodes{ id project{ id } ${ITEM_FIELD_VALUES} }
+              pageInfo{ hasNextPage endCursor }
+            }
           }
         }
-      }
-    }`, { owner, repo, num: issueNumber });
-    const item = res.repository?.issue?.projectItems.nodes.find((n) => n.project.id === ctx.projectId);
-    if (!item)
-        return null;
-    if (item.fieldValues.pageInfo.hasNextPage) {
-        // 50 field values should be ample; warn loudly rather than read a partial state.
-        throw new Error(`Item ${item.id} has more than 50 field values; refusing to act on a partial read.`);
-    }
-    return readItemState(item.id, item.fieldValues.nodes, ctx.statusFieldId, ctx.expiryFieldId);
+      }`, { owner, repo, num: issueNumber, cursor });
+        const items = res.repository?.issue?.projectItems;
+        if (!items)
+            return null;
+        const item = items.nodes.find((n) => n.project.id === ctx.projectId);
+        if (item) {
+            if (item.fieldValues.pageInfo.hasNextPage) {
+                throw new Error(`Item ${item.id} has more than 100 field values; refusing to act on a partial read.`);
+            }
+            return readItemState(item.id, item.fieldValues.nodes, ctx.statusFieldId, ctx.expiryFieldId);
+        }
+        cursor = items.pageInfo.hasNextPage ? items.pageInfo.endCursor : null;
+    } while (cursor);
+    return null;
 }
 /** Enumerate all board items whose status is one of `statusOptionIds` (for the sweep). */
 async function listItemsByStatus(octokit, ctx, statusOptionIds) {
@@ -32112,19 +32135,24 @@ async function getPull(octokit, owner, repo, pull_number) {
         throw err;
     }
 }
-/** Append "Closes #N" to a PR body if absent. */
+// A hidden, issue-specific marker so we only ever touch our own line, never user prose.
+const closesMarker = (issueNumber) => `<!-- claim-bot:closes #${issueNumber} -->`;
+/** Append a "Closes #N" line (with our marker) to a PR body if not already present. */
 async function linkPullToIssue(octokit, owner, repo, pull_number, issueNumber, body) {
-    const marker = `Closes #${issueNumber}`;
-    if (new RegExp(`closes #${issueNumber}\\b`, 'i').test(body))
+    const marker = closesMarker(issueNumber);
+    if (body.includes(marker))
         return;
-    const next = `${body.replace(/\s+$/, '')}\n\n${marker}`.replace(/^\n+/, '');
+    const next = `${body.replace(/\s+$/, '')}\n\nCloses #${issueNumber} ${marker}`.replace(/^\n+/, '');
     await octokit.rest.pulls.update({ owner, repo, pull_number, body: next });
 }
-/** Remove a "Closes #N" line from a PR body if present. */
+/** Remove only the bot's own "Closes #N" marker line from a PR body. */
 async function unlinkPullFromIssue(octokit, owner, repo, pull_number, issueNumber, body) {
-    const next = body.replace(new RegExp(`\\n*closes #${issueNumber}\\b[^\\n]*`, 'i'), '').replace(/\s+$/, '');
-    if (next === body.replace(/\s+$/, ''))
+    const marker = closesMarker(issueNumber);
+    if (!body.includes(marker))
         return;
+    const next = body
+        .replace(new RegExp(`\\n*[^\\n]*${marker}[^\\n]*`), '')
+        .replace(/\s+$/, '');
     await octokit.rest.pulls.update({ owner, repo, pull_number, body: next });
 }
 
@@ -32211,9 +32239,11 @@ async function handleClaim(deps, expiryArg) {
         await comment(octokit, owner, repo, issueNumber, `@${actor} ${res.reason}`);
         return;
     }
-    // Fail-closed order: status + expiry first, then assignment, then the human comment.
-    await setStatus(octokit, ctx, item.itemId, claimedId);
+    // Fail-closed order: write the expiry BEFORE flipping to Claimed, so the item is never
+    // observable as Claimed-with-empty-expiry (which a sweep could misread as a legacy claim).
+    // Then status, then assignment, then the human comment.
     await setExpiry(octokit, ctx, item.itemId, toStorage(res.expiry));
+    await setStatus(octokit, ctx, item.itemId, claimedId);
     await issues_assign(octokit, owner, repo, issueNumber, actor);
     const lines = [`@${actor} you've claimed this task — it expires **${formatExpiry(res.expiry)}**.`];
     if (res.usedDefault) {
@@ -32287,7 +32317,8 @@ async function handlePropose(deps, pr) {
         return;
     }
     await linkPullToIssue(octokit, owner, repo, pr, issueNumber, pull.body);
-    await setStatus(octokit, ctx, item.itemId, inProgressId);
+    // Refresh the expiry before flipping status, so the item is never In Progress with a
+    // stale expiry (matters when expire-in-progress is enabled).
     let expiryNote = '';
     if (expiryEnabled(cfg)) {
         const res = resolveExpiry('', new Date(), cfg.defaultTtl, cfg.maxTtlMs); // refresh to default from now
@@ -32296,6 +32327,7 @@ async function handlePropose(deps, pr) {
             expiryNote = ` Claim refreshed — expires **${formatExpiry(res.expiry)}**.`;
         }
     }
+    await setStatus(octokit, ctx, item.itemId, inProgressId);
     await comment(octokit, owner, repo, issueNumber, `@${actor} linked PR #${pr}; task moved to **${cfg.statusInProgress}**.${expiryNote}`);
 }
 
@@ -32399,6 +32431,16 @@ async function processCandidate(octokit, cfg, ctx, c, now, onExpire, onBackfill)
         if (cfg.backfillLegacy === 'ignore')
             return;
         if (cfg.backfillLegacy === 'grace') {
+            // Compare-and-swap: only backfill if the item is still Claimed-with-empty-expiry and
+            // the assignees are unchanged, so we don't clobber a fresh claim/renew that raced us.
+            const fresh = await getIssueItem(octokit, owner, repo, c.issueNumber, ctx);
+            if (!fresh || fresh.itemId !== c.itemId)
+                return;
+            if (fresh.statusOptionId !== c.statusOptionId || fresh.expiryText)
+                return;
+            const assignees = await getAssignees(octokit, owner, repo, c.issueNumber);
+            if (!sameSet(assignees, c.assignees))
+                return;
             const expiry = new Date(now.getTime() + (cfg.defaultTtl.disabled ? 30 * MS_PER_DAY : cfg.defaultTtl.ms));
             await setExpiry(octokit, ctx, c.itemId, toStorage(expiry));
             onBackfill();

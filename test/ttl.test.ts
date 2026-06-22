@@ -61,6 +61,12 @@ test('parseInstant: full datetime', () => {
   assert.equal(parseInstant('not a date'), null)
 })
 
+test('parseInstant: rejects calendar-invalid dates (no rollover)', () => {
+  assert.equal(parseInstant('2026-02-30'), null)
+  assert.equal(parseInstant('2026-13-01'), null)
+  assert.equal(parseInstant('2026-00-10'), null)
+})
+
 const NOW = new Date('2026-06-22T12:00:00Z')
 const DEFAULT = { disabled: false as const, ms: 30 * MS_PER_DAY }
 const MAX = 90 * MS_PER_DAY

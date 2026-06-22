@@ -86,6 +86,7 @@ interface FieldNode {
   __typename: string
   id: string
   name: string
+  dataType?: string
   options?: { id: string; name: string }[]
 }
 
@@ -108,7 +109,8 @@ export async function loadFields(
             nodes{
               __typename
               ... on ProjectV2FieldCommon { id name }
-              ... on ProjectV2SingleSelectField { id name options { id name } }
+              ... on ProjectV2Field { dataType }
+              ... on ProjectV2SingleSelectField { options { id name } }
             }
             pageInfo{ hasNextPage endCursor }
           }
@@ -120,8 +122,15 @@ export async function loadFields(
     cursor = res.node.fields.pageInfo.hasNextPage ? res.node.fields.pageInfo.endCursor : null
   } while (cursor)
 
-  const status = nodes.find((n) => n.name === statusFieldName && n.options)
-  if (!status) throw new Error(`Project has no single-select field named ${JSON.stringify(statusFieldName)}.`)
+  const status = nodes.find((n) => n.name === statusFieldName && n.__typename === 'ProjectV2SingleSelectField')
+  if (!status) {
+    const named = nodes.find((n) => n.name === statusFieldName)
+    throw new Error(
+      named
+        ? `Field ${JSON.stringify(statusFieldName)} is a ${named.__typename}, not a single-select field.`
+        : `Project has no single-select field named ${JSON.stringify(statusFieldName)}.`,
+    )
+  }
 
   const statusOptionIdByName = new Map<string, string>()
   const statusNameById = new Map<string, string>()
@@ -130,13 +139,17 @@ export async function loadFields(
     statusNameById.set(o.id, o.name)
   }
 
+  // The expiry field, if present, must be a Text field (we store an ISO datetime string).
+  let expiryFieldId: string | null = null
   const expiry = nodes.find((n) => n.name === expiryFieldName)
-  return {
-    statusFieldId: status.id,
-    statusOptionIdByName,
-    statusNameById,
-    expiryFieldId: expiry ? expiry.id : null,
+  if (expiry) {
+    if (expiry.__typename !== 'ProjectV2Field' || expiry.dataType !== 'TEXT') {
+      throw new Error(`Expiry field ${JSON.stringify(expiryFieldName)} must be a Text field, but it is ${expiry.dataType ?? expiry.__typename}.`)
+    }
+    expiryFieldId = expiry.id
   }
+
+  return { statusFieldId: status.id, statusOptionIdByName, statusNameById, expiryFieldId }
 }
 
 interface FieldValue {
@@ -166,7 +179,7 @@ function readItemState(
 }
 
 const ITEM_FIELD_VALUES = `
-  fieldValues(first:50){
+  fieldValues(first:100){
     nodes{
       __typename
       ... on ProjectV2ItemFieldSingleSelectValue { optionId field { ... on ProjectV2FieldCommon { id name } } }
@@ -183,27 +196,35 @@ export async function getIssueItem(
   issueNumber: number,
   ctx: ProjectContext,
 ): Promise<ItemState | null> {
-  const res: {
-    repository: { issue: { projectItems: { nodes: { id: string; project: { id: string }; fieldValues: { nodes: FieldValue[]; pageInfo: { hasNextPage: boolean } } }[] } } | null } | null
-  } = await octokit.graphql(
-    `query($owner:String!,$repo:String!,$num:Int!){
-      repository(owner:$owner,name:$repo){
-        issue(number:$num){
-          projectItems(first:20){
-            nodes{ id project{ id } ${ITEM_FIELD_VALUES} }
+  let cursor: string | null = null
+  do {
+    const res: {
+      repository: { issue: { projectItems: { nodes: { id: string; project: { id: string }; fieldValues: { nodes: FieldValue[]; pageInfo: { hasNextPage: boolean } } }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } | null } | null
+    } = await octokit.graphql(
+      `query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
+        repository(owner:$owner,name:$repo){
+          issue(number:$num){
+            projectItems(first:50,after:$cursor){
+              nodes{ id project{ id } ${ITEM_FIELD_VALUES} }
+              pageInfo{ hasNextPage endCursor }
+            }
           }
         }
+      }`,
+      { owner, repo, num: issueNumber, cursor },
+    )
+    const items = res.repository?.issue?.projectItems
+    if (!items) return null
+    const item = items.nodes.find((n) => n.project.id === ctx.projectId)
+    if (item) {
+      if (item.fieldValues.pageInfo.hasNextPage) {
+        throw new Error(`Item ${item.id} has more than 100 field values; refusing to act on a partial read.`)
       }
-    }`,
-    { owner, repo, num: issueNumber },
-  )
-  const item = res.repository?.issue?.projectItems.nodes.find((n) => n.project.id === ctx.projectId)
-  if (!item) return null
-  if (item.fieldValues.pageInfo.hasNextPage) {
-    // 50 field values should be ample; warn loudly rather than read a partial state.
-    throw new Error(`Item ${item.id} has more than 50 field values; refusing to act on a partial read.`)
-  }
-  return readItemState(item.id, item.fieldValues.nodes, ctx.statusFieldId, ctx.expiryFieldId)
+      return readItemState(item.id, item.fieldValues.nodes, ctx.statusFieldId, ctx.expiryFieldId)
+    }
+    cursor = items.pageInfo.hasNextPage ? items.pageInfo.endCursor : null
+  } while (cursor)
+  return null
 }
 
 export interface ClaimedItem {
