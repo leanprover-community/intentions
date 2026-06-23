@@ -1,0 +1,44 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readConfig } from '../src/config.js'
+
+// @actions/core reads inputs from INPUT_<NAME> (spaces -> _, uppercased; hyphens kept).
+function setInputs(inputs: Record<string, string>): void {
+  for (const k of Object.keys(process.env)) if (k.startsWith('INPUT_')) delete process.env[k]
+  for (const [name, value] of Object.entries(inputs)) {
+    process.env[`INPUT_${name.replace(/ /g, '_').toUpperCase()}`] = value
+  }
+}
+
+// 'expire-in-progress' has an action.yml default the Actions runner injects; supply it here
+// so getBooleanInput (which throws on empty) sees the same value it would at runtime.
+const required = {
+  mode: 'lifecycle',
+  'project-token': 't',
+  'project-title': 'My Project',
+  'expire-in-progress': 'false',
+}
+
+test('mode accepts lifecycle', () => {
+  setInputs(required)
+  assert.equal(readConfig().mode, 'lifecycle')
+})
+
+test('mode rejects unknown values', () => {
+  setInputs({ ...required, mode: 'bogus' })
+  assert.throws(() => readConfig(), /Invalid mode/)
+})
+
+test('lifecycle status defaults', () => {
+  setInputs(required)
+  const cfg = readConfig()
+  assert.equal(cfg.statusInReview, 'In Review')
+  assert.equal(cfg.statusCompleted, 'Completed')
+})
+
+test('auto-add defaults true and is overridable', () => {
+  setInputs(required)
+  assert.equal(readConfig().autoAdd, true)
+  setInputs({ ...required, 'auto-add': 'false' })
+  assert.equal(readConfig().autoAdd, false)
+})

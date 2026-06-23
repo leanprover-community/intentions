@@ -9,6 +9,7 @@ import { handleDisclaim } from './commands/disclaim.js'
 import { handlePropose } from './commands/propose.js'
 import { handleWithdraw } from './commands/withdraw.js'
 import { runSweep } from './sweep.js'
+import { runLifecycle } from './lifecycle.js'
 
 async function main(): Promise<void> {
   const cfg = readConfig()
@@ -39,6 +40,11 @@ async function main(): Promise<void> {
 
   if (cfg.mode === 'sweep') {
     await runSweep(octokit, cfg, ctx)
+    return
+  }
+
+  if (cfg.mode === 'lifecycle') {
+    await runLifecycle(octokit, cfg, ctx)
     return
   }
 

@@ -1,0 +1,32 @@
+# Copy to `.github/workflows/claim-bot.yml` in your project.
+# One workflow drives the whole board: claim/disclaim/propose/withdraw comments, the
+# issue/PR lifecycle (auto-add new issues, move cards as PRs open/merge/close), and the
+# scheduled sweep that expires stale claims. No GitHub native Project workflows needed.
+name: Claim bot
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, closed, reopened]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, converted_to_draft, closed]
+  schedule:
+    # Every 6 hours. Use a tighter cadence (e.g. "*/15 * * * *") if you rely on short,
+    # sub-day TTLs — GitHub cron is loose, so release lags the schedule. Drop this trigger
+    # (and the sweep does nothing) if you set default-ttl: none.
+    - cron: "17 */6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  claim-bot:
+    uses: leanprover-community/claim-bot/.github/workflows/claim-bot.yml@v1
+    with:
+      project-title: "My Project"   # the exact title of your Projects v2 board
+      default-ttl: "30d"            # set to "none" to disable expiry entirely
+      max-ttl: "90d"
+      app-id: ${{ vars.CLAIM_BOT_APP_ID }}
+    secrets:
+      app-private-key: ${{ secrets.CLAIM_BOT_APP_PRIVATE_KEY }}
+      # Or, instead of a GitHub App, use a PAT:
+      # project-token: ${{ secrets.CLAIM_BOT_TOKEN }}

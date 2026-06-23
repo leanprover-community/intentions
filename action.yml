@@ -4,7 +4,7 @@ author: 'leanprover-community'
 
 inputs:
   mode:
-    description: 'What to run: "command" (handle an issue_comment) or "sweep" (expire stale claims).'
+    description: 'What to run: "command" (handle an issue_comment), "lifecycle" (react to issue/PR events), or "sweep" (expire stale claims).'
     required: true
   project-token:
     description: 'GitHub App installation token (preferred for orgs) or fine-grained PAT with Projects + Issues + Pull requests write. The default GITHUB_TOKEN cannot write org-level Projects v2.'
@@ -25,9 +25,21 @@ inputs:
     required: false
     default: 'Claimed'
   status-in-progress:
-    description: 'Name of the "in progress" option of the status field.'
+    description: 'Name of the "in progress" option of the status field (a draft PR is open).'
     required: false
     default: 'In Progress'
+  status-in-review:
+    description: 'Name of the "in review" option (lifecycle moves a task here when a ready PR is open). Skipped if the board has no such option.'
+    required: false
+    default: 'In Review'
+  status-completed:
+    description: 'Name of the "completed" option (lifecycle moves a task here when its PR merges or the issue closes). Skipped if the board has no such option.'
+    required: false
+    default: 'Completed'
+  auto-add:
+    description: 'In lifecycle mode, add newly opened issues to the board as Unclaimed.'
+    required: false
+    default: 'true'
   terminal-statuses:
     description: 'Comma-separated status names the bot recognizes but does not manage (claims here are refused cleanly).'
     required: false

@@ -7,6 +7,51 @@ export async function getAssignees(octokit: Octokit, owner: string, repo: string
   return (res.data.assignees ?? []).map((a) => a.login)
 }
 
+/**
+ * The issues a PR closes via GitHub's parsed linkage (`Closes #N` / `Fixes #N` and the
+ * "Development" sidebar), restricted to issues in this same repo (the board's tasks).
+ * This is the source of truth for auto-linking — we read it rather than re-parsing prose.
+ */
+export async function getClosingIssueNumbers(octokit: Octokit, owner: string, repo: string, pull_number: number): Promise<number[]> {
+  const res: {
+    repository: { pullRequest: { closingIssuesReferences: { nodes: { number: number; repository: { name: string; owner: { login: string } } }[] } } | null } | null
+  } = await octokit.graphql(
+    `query($owner:String!,$repo:String!,$num:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$num){
+          closingIssuesReferences(first:20){ nodes{ number repository{ name owner{ login } } } }
+        }
+      }
+    }`,
+    { owner, repo, num: pull_number },
+  )
+  const nodes = res.repository?.pullRequest?.closingIssuesReferences?.nodes ?? []
+  return nodes
+    .filter((n) => n.repository.owner.login.toLowerCase() === owner.toLowerCase() && n.repository.name.toLowerCase() === repo.toLowerCase())
+    .map((n) => n.number)
+}
+
+/**
+ * Numbers of still-open PRs that GitHub records as closing this issue. Used when an unmerged
+ * PR closes, so we only revert the board when no other open PR is still working the issue.
+ */
+export async function getOpenClosingPullNumbers(octokit: Octokit, owner: string, repo: string, issue_number: number): Promise<number[]> {
+  const res: {
+    repository: { issue: { closedByPullRequestsReferences: { nodes: { number: number; state: string }[] } } | null } | null
+  } = await octokit.graphql(
+    `query($owner:String!,$repo:String!,$num:Int!){
+      repository(owner:$owner,name:$repo){
+        issue(number:$num){
+          closedByPullRequestsReferences(first:20, includeClosedPrs:false){ nodes{ number state } }
+        }
+      }
+    }`,
+    { owner, repo, num: issue_number },
+  )
+  const nodes = res.repository?.issue?.closedByPullRequestsReferences?.nodes ?? []
+  return nodes.filter((n) => n.state === 'OPEN').map((n) => n.number)
+}
+
 export async function assign(octokit: Octokit, owner: string, repo: string, issue_number: number, login: string): Promise<void> {
   await octokit.rest.issues.addAssignees({ owner, repo, issue_number, assignees: [login] })
 }

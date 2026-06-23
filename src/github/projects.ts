@@ -293,6 +293,18 @@ export async function listItemsByStatus(
   return out
 }
 
+/** Add an issue (by its content node id) to the board; returns the item id. The API is
+ *  idempotent: adding content already on the board returns its existing item unchanged. */
+export async function addIssueToProject(octokit: Octokit, ctx: ProjectContext, contentId: string): Promise<string> {
+  const res: { addProjectV2ItemById: { item: { id: string } } } = await octokit.graphql(
+    `mutation($p:ID!,$c:ID!){
+      addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item{ id } }
+    }`,
+    { p: ctx.projectId, c: contentId },
+  )
+  return res.addProjectV2ItemById.item.id
+}
+
 export async function setStatus(octokit: Octokit, ctx: ProjectContext, itemId: string, optionId: string): Promise<void> {
   await octokit.graphql(
     `mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){

@@ -8,8 +8,8 @@ blocking everyone forever.
 It's up to individual projects to interpret these claims: some may treat them as
 merely informational while other may expect that they are carefully respected.
 
-This is a reusable GitHub Action. Projects install it with a couple of small workflow
-files described below.
+This is a reusable GitHub Action. Projects install it with a **single small workflow file**
+described below — there are no GitHub native Project workflows to configure by hand.
 
 ## How it works
 
@@ -32,17 +32,37 @@ helpful message.
 The board's `Status` field moves `Unclaimed → Claimed → In Progress`, and a scheduled
 **sweep** returns expired claims to `Unclaimed`.
 
+### Automatic board lifecycle
+
+Beyond the comment commands, the bot keeps the whole board in sync from issue and PR events,
+so you don't have to wire up GitHub's native Project automations:
+
+| Event | Effect |
+|---|---|
+| Issue opened | Added to the board as *Unclaimed* (`auto-add`, on by default). |
+| PR opened linking the issue (`Closes #123`) | Claims it for the PR author if unclaimed, then moves to *In Review* (or *In Progress* while the PR is a draft) and refreshes the TTL. |
+| PR merged | Task → *Completed*. |
+| PR closed without merging | Task → *Claimed* (the claim is kept). |
+| Issue closed | Task → *Completed*. |
+| Issue reopened | Task → *Unclaimed* (only if it was *Completed*). |
+
+The PR linkage is read from GitHub's parsed `Closes #N` / `Fixes #N` references, so a
+contributor who opens a linked PR never has to type `propose`. Every transition is guarded on
+the card's current status, so manual board edits aren't overwritten. *In Review* and
+*Completed* are skipped automatically if your board has no such option.
+
 ## Adoption
 
-A four-step recipe. (To adopt without any expiry behavior, see step 2's note — you can skip
-the `Claim Expires` field and the sweep workflow entirely.)
+A three-step recipe. (To adopt without any expiry behavior, see step 2's note — you can skip
+the `Claim Expires` field and drop the `schedule` trigger entirely.)
 
 ### 1. Set up the board
 
 On your **Projects v2** board, make sure you have:
 
 - a **single-select** field `Status` with options `Unclaimed`, `Claimed`, `In Progress`
-  (add `In Review` / `Completed` too if you use them);
+  (add `In Review` / `Completed` too to get the full PR-driven lifecycle — they're optional
+  and skipped if absent);
 - a **Text** field `Claim Expires` (the bot stores each claim's expiry here as an ISO 8601
   UTC datetime). *Skip this if you set `default-ttl: none`.*
 
@@ -82,18 +102,26 @@ generate a key, and set the variable/secret as in step 3 above.
 
 See [examples/board-setup.md](examples/board-setup.md) for full details.
 
-### 3. Add the command workflow
+### 3. Add the workflow
 
-Create `.github/workflows/claim.yml`:
+Create a single `.github/workflows/claim-bot.yml` (full copy in
+[examples/caller-claim-bot.yml](examples/caller-claim-bot.yml)):
 
 ```yaml
 name: Claim bot
 on:
   issue_comment:
     types: [created]
+  issues:
+    types: [opened, closed, reopened]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, converted_to_draft, closed]
+  schedule:
+    - cron: "17 */6 * * *"   # the sweep; tighter (e.g. "*/15 * * * *") if you use short TTLs
+  workflow_dispatch: {}
 jobs:
-  claim:
-    uses: leanprover-community/claim-bot/.github/workflows/claim-commands.yml@v1
+  claim-bot:
+    uses: leanprover-community/claim-bot/.github/workflows/claim-bot.yml@v1
     with:
       project-title: "My Project"   # exact title of your Projects v2 board
       default-ttl: "30d"            # use "none" to disable expiry entirely
@@ -103,36 +131,21 @@ jobs:
       app-private-key: ${{ secrets.CLAIM_BOT_APP_PRIVATE_KEY }}
 ```
 
-### 4. Add the sweep workflow
+One workflow handles comments, the issue/PR lifecycle, and the sweep — the reusable workflow
+picks the right job from the triggering event. If you set `default-ttl: none`, drop the
+`schedule` trigger (the sweep then does nothing). To turn off the automatic lifecycle and keep
+only the comment commands, list just the `issue_comment` trigger.
 
-Create `.github/workflows/claim-sweep.yml` (skip this if `default-ttl: none`):
-
-```yaml
-name: Claim bot sweep
-on:
-  schedule:
-    - cron: "17 */6 * * *"   # tighter (e.g. "*/15 * * * *") if you use short TTLs
-  workflow_dispatch: {}
-jobs:
-  sweep:
-    uses: leanprover-community/claim-bot/.github/workflows/claim-sweep.yml@v1
-    with:
-      project-title: "My Project"
-      default-ttl: "30d"
-      app-id: ${{ vars.CLAIM_BOT_APP_ID }}
-    secrets:
-      app-private-key: ${{ secrets.CLAIM_BOT_APP_PRIVATE_KEY }}
-```
-
-That's it. Contributors now claim tasks by commenting `claim`.
+That's it. Contributors now claim tasks by commenting `claim`, or simply by opening a PR that
+closes the issue.
 
 ## Expiry: defaults, limits, and opting out
 
 - `default-ttl` (default `30d`) — applied to a bare `claim`.
 - `max-ttl` (default `90d`) — the longest a claimant may request.
 - **Opt out entirely:** set `default-ttl: none`. The bot then never records or mentions
-  expiry, the sweep is a no-op, and you don't need the `Claim Expires` field or the sweep
-  workflow. (You still get the maintained, reusable claim workflow.)
+  expiry, the sweep is a no-op, and you don't need the `Claim Expires` field or the `schedule`
+  trigger. (You still get the commands and the board lifecycle.)
 
 > **Sub-day TTLs are best-effort.** GitHub's `cron` fires loosely (often delayed many
 > minutes), so a `1h` claim is released at *next sweep ≥ expiry*, not on the minute. If you
@@ -141,7 +154,7 @@ That's it. Contributors now claim tasks by commenting `claim`.
 
 ## Configuration
 
-All inputs (set on the reusable workflows):
+All inputs (set on the reusable workflow):
 
 | input | default | meaning |
 |---|---|---|
@@ -150,14 +163,16 @@ All inputs (set on the reusable workflows):
 | `max-ttl` | `90d` | maximum requestable TTL |
 | `status-field` | `Status` | single-select field name |
 | `status-unclaimed` / `status-claimed` / `status-in-progress` | `Unclaimed` / `Claimed` / `In Progress` | option names |
-| `terminal-statuses` | `In Review,Completed` | states recognized but not managed |
+| `status-in-review` / `status-completed` | `In Review` / `Completed` | lifecycle targets when a PR is ready / merges; skipped if the board lacks the option |
+| `auto-add` | `true` | add newly opened issues to the board as *Unclaimed* |
+| `terminal-statuses` | `In Review,Completed` | states where a `claim` comment is refused |
 | `expiry-field` | `Claim Expires` | Text field holding the ISO 8601 UTC expiry |
 | `expire-in-progress` | `false` | also expire *In Progress* items in the sweep |
 | `backfill-legacy` | `grace` | how the sweep treats claims with no expiry: `grace` / `ignore` / `expire` |
 
 ## Migrating from the original four-file bot
 
-Replace the per-project `01-claim-issue.yml` … `04-withdraw-pr.yml` with the two workflows
+Replace the per-project `01-claim-issue.yml` … `04-withdraw-pr.yml` with the single workflow
 above (one PR). The command vocabulary is unchanged, so contributors notice nothing except
 that claims now expire. To preserve the old "claims never expire" behavior, set
 `default-ttl: none`. Existing open claims (which have no recorded expiry) are handled by

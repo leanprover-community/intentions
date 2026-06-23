@@ -1,0 +1,179 @@
+name: claim-bot
+
+# Reusable workflow handling every claim-bot trigger. Adopters call this from a single thin
+# caller that lists the events they want (see examples/caller-claim-bot.yml). The job that runs
+# is selected by the triggering event:
+#   issue_comment                 -> command  (claim / disclaim / propose / withdraw)
+#   issues, pull_request_target   -> lifecycle (auto-add, PR-driven status, completion)
+#   schedule, workflow_dispatch   -> sweep     (expire stale claims)
+on:
+  workflow_call:
+    inputs:
+      project-title:
+        required: true
+        type: string
+      status-field:
+        required: false
+        type: string
+        default: Status
+      status-unclaimed:
+        required: false
+        type: string
+        default: Unclaimed
+      status-claimed:
+        required: false
+        type: string
+        default: Claimed
+      status-in-progress:
+        required: false
+        type: string
+        default: In Progress
+      status-in-review:
+        required: false
+        type: string
+        default: In Review
+      status-completed:
+        required: false
+        type: string
+        default: Completed
+      terminal-statuses:
+        required: false
+        type: string
+        default: In Review,Completed
+      auto-add:
+        required: false
+        type: boolean
+        default: true
+      expiry-field:
+        required: false
+        type: string
+        default: Claim Expires
+      default-ttl:
+        required: false
+        type: string
+        default: 30d
+      max-ttl:
+        required: false
+        type: string
+        default: 90d
+      expire-in-progress:
+        required: false
+        type: boolean
+        default: false
+      backfill-legacy:
+        required: false
+        type: string
+        default: grace
+      app-id:
+        description: GitHub App ID. If set, a short-lived installation token is minted and used.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      app-private-key:
+        description: GitHub App private key (PEM). Required when app-id is set.
+        required: false
+      project-token:
+        description: A PAT to use instead of a GitHub App.
+        required: false
+
+jobs:
+  command:
+    # Freshly-created issue comments only, and skip the bot's own comments so its replies don't
+    # re-trigger a no-op run. (The app-id == '' branch keeps PAT-mode working.)
+    if: >-
+      github.event_name == 'issue_comment' && github.event.action == 'created' &&
+      (inputs.app-id == '' || github.event.comment.performed_via_github_app.id != fromJSON(inputs.app-id))
+    runs-on: ubuntu-latest
+    # Serialize per issue so two near-simultaneous comments don't race.
+    concurrency:
+      group: claim-bot-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions: {}
+    steps:
+      - id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+      # Pinned to the major tag; this reusable workflow and the action are released together.
+      - uses: leanprover-community/claim-bot@v1
+        with:
+          mode: command
+          project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
+          project-title: ${{ inputs.project-title }}
+          status-field: ${{ inputs.status-field }}
+          status-unclaimed: ${{ inputs.status-unclaimed }}
+          status-claimed: ${{ inputs.status-claimed }}
+          status-in-progress: ${{ inputs.status-in-progress }}
+          terminal-statuses: ${{ inputs.terminal-statuses }}
+          expiry-field: ${{ inputs.expiry-field }}
+          default-ttl: ${{ inputs.default-ttl }}
+          max-ttl: ${{ inputs.max-ttl }}
+
+  lifecycle:
+    # Issue and PR events keep the board in sync without native Project workflows.
+    if: github.event_name == 'issues' || github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    # Serialize repeated events on the same issue/PR. A PR event keys on its PR number, so it
+    # can still overlap a `claim` comment on the linked issue — the action guards that with a
+    # compare-and-swap (re-read status before mutating), the same way the sweep does.
+    concurrency:
+      group: claim-bot-item-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions: {}
+    steps:
+      - id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+      - uses: leanprover-community/claim-bot@v1
+        with:
+          mode: lifecycle
+          project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
+          project-title: ${{ inputs.project-title }}
+          status-field: ${{ inputs.status-field }}
+          status-unclaimed: ${{ inputs.status-unclaimed }}
+          status-claimed: ${{ inputs.status-claimed }}
+          status-in-progress: ${{ inputs.status-in-progress }}
+          status-in-review: ${{ inputs.status-in-review }}
+          status-completed: ${{ inputs.status-completed }}
+          auto-add: ${{ inputs.auto-add }}
+          expiry-field: ${{ inputs.expiry-field }}
+          default-ttl: ${{ inputs.default-ttl }}
+          max-ttl: ${{ inputs.max-ttl }}
+
+  sweep:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # One sweep at a time across the whole project.
+    concurrency:
+      group: claim-bot-sweep
+      cancel-in-progress: false
+    permissions: {}
+    steps:
+      - id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+      - uses: leanprover-community/claim-bot@v1
+        with:
+          mode: sweep
+          project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
+          project-title: ${{ inputs.project-title }}
+          status-field: ${{ inputs.status-field }}
+          status-unclaimed: ${{ inputs.status-unclaimed }}
+          status-claimed: ${{ inputs.status-claimed }}
+          status-in-progress: ${{ inputs.status-in-progress }}
+          expiry-field: ${{ inputs.expiry-field }}
+          default-ttl: ${{ inputs.default-ttl }}
+          expire-in-progress: ${{ inputs.expire-in-progress }}
+          backfill-legacy: ${{ inputs.backfill-legacy }}

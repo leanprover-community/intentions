@@ -8,10 +8,13 @@ A single-select field (default name `Status`) with at least these options:
 
 - `Unclaimed` — available to claim
 - `Claimed` — someone holds it
-- `In Progress` — a PR has been proposed
-- (optional) `In Review`, `Completed` — terminal states the bot recognizes but doesn't manage
+- `In Progress` — a draft PR is open for the task
+- (optional) `In Review` — a ready PR is open; the lifecycle moves the task here
+- (optional) `Completed` — the PR merged or the issue closed; the lifecycle moves the task here
 
-Option **names** are configurable via inputs (`status-unclaimed`, etc.) if yours differ.
+The two optional options unlock the full PR-driven lifecycle (see the README); if your board
+doesn't have them, those transitions are skipped cleanly. Option **names** are configurable
+via inputs (`status-unclaimed`, `status-in-review`, `status-completed`, etc.) if yours differ.
 
 ## 2. Claim Expires (text)
 
@@ -20,7 +23,7 @@ ISO 8601 UTC datetime (e.g. `2026-08-01T14:00:00Z`); the sweep reads it. A Text 
 used (not a Date field) so hour-granularity TTLs are representable.
 
 > If you set `default-ttl: none` (expiry disabled), you do **not** need this field, and you
-> don't need the sweep workflow at all.
+> can drop the `schedule` trigger from the workflow (the sweep then does nothing).
 
 ## 3. Tasks
 
