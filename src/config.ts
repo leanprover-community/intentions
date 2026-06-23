@@ -23,11 +23,25 @@ export interface Config {
   expireInProgress: boolean
   backfillLegacy: BackfillMode
   autoAdd: boolean
+  autoAddLabels: string[]
 }
 
 /** True when the project has turned expiry off entirely (default-ttl: none). */
 export function expiryEnabled(cfg: Config): boolean {
   return !cfg.defaultTtl.disabled
+}
+
+/**
+ * Should a newly-opened issue carrying these labels be auto-added to the board?
+ * `auto-add: false` disables it entirely. Otherwise an empty `auto-add-labels` adds every issue,
+ * and a non-empty `auto-add-labels` adds only issues carrying at least one of those labels
+ * (case-insensitive), e.g. set it to `intention` so only intention issues land on the board.
+ */
+export function shouldAutoAdd(cfg: Config, issueLabels: string[]): boolean {
+  if (!cfg.autoAdd) return false
+  if (cfg.autoAddLabels.length === 0) return true
+  const have = new Set(issueLabels.map((l) => l.toLowerCase()))
+  return cfg.autoAddLabels.some((l) => have.has(l.toLowerCase()))
 }
 
 function parseMode(raw: string): Mode {
@@ -71,6 +85,10 @@ export function readConfig(): Config {
     expireInProgress: core.getBooleanInput('expire-in-progress'),
     backfillLegacy: parseBackfill(core.getInput('backfill-legacy') || 'grace'),
     autoAdd: boolInput('auto-add', true),
+    autoAddLabels: (core.getInput('auto-add-labels') || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   }
 }
 

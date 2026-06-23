@@ -31845,6 +31845,20 @@ function formatDuration(ms) {
 function expiryEnabled(cfg) {
     return !cfg.defaultTtl.disabled;
 }
+/**
+ * Should a newly-opened issue carrying these labels be auto-added to the board?
+ * `auto-add: false` disables it entirely. Otherwise an empty `auto-add-labels` adds every issue,
+ * and a non-empty `auto-add-labels` adds only issues carrying at least one of those labels
+ * (case-insensitive), e.g. set it to `intention` so only intention issues land on the board.
+ */
+function shouldAutoAdd(cfg, issueLabels) {
+    if (!cfg.autoAdd)
+        return false;
+    if (cfg.autoAddLabels.length === 0)
+        return true;
+    const have = new Set(issueLabels.map((l) => l.toLowerCase()));
+    return cfg.autoAddLabels.some((l) => have.has(l.toLowerCase()));
+}
 function parseMode(raw) {
     if (raw === 'command' || raw === 'sweep' || raw === 'lifecycle')
         return raw;
@@ -31884,6 +31898,10 @@ function readConfig() {
         expireInProgress: core.getBooleanInput('expire-in-progress'),
         backfillLegacy: parseBackfill(core.getInput('backfill-legacy') || 'grace'),
         autoAdd: boolInput('auto-add', true),
+        autoAddLabels: (core.getInput('auto-add-labels') || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
     };
 }
 /** Boolean input with a default when unset (core.getBooleanInput throws on empty). */
@@ -32821,8 +32839,11 @@ async function runIssueEvent(octokit, cfg, ctx, action) {
     const { owner, repo } = github.context.repo;
     const num = issue.number;
     if (action === 'opened') {
-        if (!cfg.autoAdd)
+        const labels = (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean);
+        if (!shouldAutoAdd(cfg, labels)) {
+            core.info(`#${num}: not auto-added (auto-add filter not satisfied by labels [${labels.join(', ')}]).`);
             return;
+        }
         const existing = await getIssueItem(octokit, owner, repo, num, ctx);
         if (existing)
             return; // already on the board; leave its status alone

@@ -44,6 +44,10 @@ on:
         required: false
         type: boolean
         default: true
+      auto-add-labels:
+        required: false
+        type: string
+        default: ''
       expiry-field:
         required: false
         type: string
@@ -152,6 +156,7 @@ jobs:
           status-in-review: ${{ inputs.status-in-review }}
           status-completed: ${{ inputs.status-completed }}
           auto-add: ${{ inputs.auto-add }}
+          auto-add-labels: ${{ inputs.auto-add-labels }}
           expiry-field: ${{ inputs.expiry-field }}
           default-ttl: ${{ inputs.default-ttl }}
           max-ttl: ${{ inputs.max-ttl }}

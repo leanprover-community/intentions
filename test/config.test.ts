@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readConfig } from '../src/config.js'
+import { readConfig, shouldAutoAdd, type Config } from '../src/config.js'
 
 // @actions/core reads inputs from INPUT_<NAME> (spaces -> _, uppercased; hyphens kept).
 function setInputs(inputs: Record<string, string>): void {
@@ -41,6 +41,24 @@ test('auto-add defaults true and is overridable', () => {
   assert.equal(readConfig().autoAdd, true)
   setInputs({ ...required, 'auto-add': 'false' })
   assert.equal(readConfig().autoAdd, false)
+})
+
+test('auto-add-labels parses to a trimmed list (default empty)', () => {
+  setInputs(required)
+  assert.deepEqual(readConfig().autoAddLabels, [])
+  setInputs({ ...required, 'auto-add-labels': ' intention , roadmap-feedback ' })
+  assert.deepEqual(readConfig().autoAddLabels, ['intention', 'roadmap-feedback'])
+})
+
+test('shouldAutoAdd: off disables; empty allowlist adds all; allowlist filters (case-insensitive)', () => {
+  const base = { autoAdd: true, autoAddLabels: [] as string[] } as Config
+  assert.equal(shouldAutoAdd({ ...base, autoAdd: false }, ['intention']), false)
+  assert.equal(shouldAutoAdd(base, ['anything']), true)
+  assert.equal(shouldAutoAdd(base, []), true)
+  const filtered = { ...base, autoAddLabels: ['intention'] } as Config
+  assert.equal(shouldAutoAdd(filtered, ['Intention', 'roadmap/PDE']), true)
+  assert.equal(shouldAutoAdd(filtered, ['meta']), false)
+  assert.equal(shouldAutoAdd(filtered, []), false)
 })
 
 test('note-field defaults and is overridable', () => {

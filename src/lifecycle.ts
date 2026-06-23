@@ -1,6 +1,6 @@
 import * as core from '@actions/core'
 import { context, type getOctokit } from '@actions/github'
-import { type Config, expiryEnabled } from './config.js'
+import { type Config, expiryEnabled, shouldAutoAdd } from './config.js'
 import { resolveExpiry, toStorage } from './ttl.js'
 import {
   type ProjectContext,
@@ -37,7 +37,7 @@ export async function runLifecycle(octokit: Octokit, repoOctokit: Octokit, cfg: 
 }
 
 async function runIssueEvent(octokit: Octokit, cfg: Config, ctx: ProjectContext, action: string): Promise<void> {
-  const issue = context.payload.issue as { number?: number; node_id?: string; pull_request?: unknown } | undefined
+  const issue = context.payload.issue as { number?: number; node_id?: string; pull_request?: unknown; labels?: { name?: string }[] } | undefined
   if (!issue?.number || issue.pull_request) {
     core.info('Not an issue payload (or it is a PR); nothing to do.')
     return
@@ -46,7 +46,11 @@ async function runIssueEvent(octokit: Octokit, cfg: Config, ctx: ProjectContext,
   const num = issue.number
 
   if (action === 'opened') {
-    if (!cfg.autoAdd) return
+    const labels = (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean)
+    if (!shouldAutoAdd(cfg, labels)) {
+      core.info(`#${num}: not auto-added (auto-add filter not satisfied by labels [${labels.join(', ')}]).`)
+      return
+    }
     const existing = await getIssueItem(octokit, owner, repo, num, ctx)
     if (existing) return // already on the board; leave its status alone
     if (!issue.node_id) {

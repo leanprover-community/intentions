@@ -44,6 +44,10 @@ inputs:
     description: 'In lifecycle mode, add newly opened issues to the board as Unclaimed.'
     required: false
     default: 'true'
+  auto-add-labels:
+    description: 'Comma-separated label allowlist for auto-add. Empty adds every opened issue; otherwise only issues carrying one of these labels are added (e.g. "intention").'
+    required: false
+    default: ''
   terminal-statuses:
     description: 'Comma-separated status names the bot recognizes but does not manage (claims here are refused cleanly).'
     required: false
