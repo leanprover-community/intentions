@@ -207,6 +207,12 @@ subsequently deployed by Pietro to
 `propose PR` / `withdraw PR` vocabulary and the board-driven workflow are theirs; this repo
 repackages that idea as a maintained, reusable action and adds claim expiry. Thank you both.
 
+The same workflow has since been adopted by other Lean/math projects, including
+[Sphere Packing in Lean](https://github.com/thefundamentaltheor3m/Sphere-Packing-Lean),
+[ABC-Exceptions](https://github.com/b-mehta/ABC-Exceptions),
+[SpectralThm](https://github.com/oliver-butterley/SpectralThm), and
+[brownian-motion](https://github.com/RemyDegenne/brownian-motion).
+
 ## License
 
 Apache-2.0.
