@@ -20,6 +20,7 @@ Comment on an issue that's on the project board:
 | `claim` | Claim the task with the project's default TTL. |
 | `claim 2w` · `claim 5 hours` · `claim 2026-08-01` | Claim with a custom expiry (duration or date). |
 | `claim …` (again, as the holder) | Renew / extend your claim. |
+| `claim` + following lines | Attach a freeform note (see below). |
 | `disclaim` | Release a task you hold. |
 | `propose PR #123` | Link your PR; move the task to *In Progress* (refreshes the TTL). |
 | `withdraw PR #123` | Move back to *Claimed* (you keep the claim). |
@@ -31,6 +32,23 @@ helpful message.
 
 The board's `Status` field moves `Unclaimed → Claimed → In Progress`, and a scheduled
 **sweep** returns expired claims to `Unclaimed`.
+
+### Claim notes
+
+The first line of a `claim` comment is the command (and optional expiry); everything on the
+following lines is scraped verbatim into a freeform **note** and stored on the board's
+`Claim Note` Text field. For example:
+
+```
+claim 2w
+Splitting this into three PRs; starting with the parser.
+```
+
+records a two-week claim with the note "Splitting this into three PRs; starting with the
+parser." The note is updated whenever the holder re-claims with new text, and cleared when the
+claim is released (disclaimed or expired). It's a pure convenience: if your board has no
+`Claim Note` field, notes are silently ignored (rename it with `note-field`). Notes longer than
+1024 characters are truncated.
 
 ### Automatic board lifecycle
 
@@ -100,6 +118,8 @@ On your **Projects v2** board, make sure you have:
   and skipped if absent);
 - a **Text** field `Claim Expires` (the bot stores each claim's expiry here as an ISO 8601
   UTC datetime). *Skip this if you set `default-ttl: none`.*
+- *(optional)* a **Text** field `Claim Note` to hold the freeform note scraped from `claim`
+  comments. *Skip it and notes are silently ignored.*
 
 Add issues to the board and set their `Status` to `Unclaimed` — those are the claimable tasks.
 
@@ -205,6 +225,7 @@ All inputs (set on the reusable workflow):
 | `auto-add` | `true` | add newly opened issues to the board as *Unclaimed* |
 | `terminal-statuses` | `In Review,Completed` | states where a `claim` comment is refused |
 | `expiry-field` | `Claim Expires` | Text field holding the ISO 8601 UTC expiry |
+| `note-field` | `Claim Note` | optional Text field holding the freeform claim note; ignored if absent |
 | `expire-in-progress` | `false` | also expire *In Progress* items in the sweep |
 | `backfill-legacy` | `grace` | how the sweep treats claims with no expiry: `grace` / `ignore` / `expire` |
 

@@ -1,3 +1,4 @@
+import * as core from '@actions/core'
 import type { getOctokit } from '@actions/github'
 
 type Octokit = ReturnType<typeof getOctokit>
@@ -11,6 +12,8 @@ export interface ProjectContext {
   statusNameById: Map<string, string>
   /** id of the expiry Text field, or null if the project has no such field */
   expiryFieldId: string | null
+  /** id of the freeform note Text field, or null if the project has no such field */
+  noteFieldId: string | null
 }
 
 export interface ItemState {
@@ -90,12 +93,13 @@ interface FieldNode {
   options?: { id: string; name: string }[]
 }
 
-/** Load the status single-select field (id + options) and the expiry text field id. */
+/** Load the status single-select field (id + options) and the expiry/note text field ids. */
 export async function loadFields(
   octokit: Octokit,
   projectId: string,
   statusFieldName: string,
   expiryFieldName: string,
+  noteFieldName: string,
 ): Promise<Omit<ProjectContext, 'projectId'>> {
   const nodes: FieldNode[] = []
   let cursor: string | null = null
@@ -149,7 +153,21 @@ export async function loadFields(
     expiryFieldId = expiry.id
   }
 
-  return { statusFieldId: status.id, statusOptionIdByName, statusNameById, expiryFieldId }
+  // The note field is optional. Unlike expiry, a wrong-typed field here disables notes with a
+  // warning rather than failing the whole action: the default name "Claim Note" may collide with
+  // a pre-existing field on a board that never opts into notes, and that must not break command,
+  // sweep, or lifecycle runs.
+  let noteFieldId: string | null = null
+  const note = nodes.find((n) => n.name === noteFieldName)
+  if (note) {
+    if (note.__typename !== 'ProjectV2Field' || note.dataType !== 'TEXT') {
+      core.warning(`Note field ${JSON.stringify(noteFieldName)} is a ${note.dataType ?? note.__typename}, not a Text field; claim notes are disabled. Make it a Text field or point note-field at a different field.`)
+    } else {
+      noteFieldId = note.id
+    }
+  }
+
+  return { statusFieldId: status.id, statusOptionIdByName, statusNameById, expiryFieldId, noteFieldId }
 }
 
 interface FieldValue {
@@ -331,5 +349,27 @@ export async function clearExpiry(octokit: Octokit, ctx: ProjectContext, itemId:
       clearProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f}){ projectV2Item{ id } }
     }`,
     { p: ctx.projectId, i: itemId, f: ctx.expiryFieldId },
+  )
+}
+
+/** Write the freeform note text. No-op if the project has no note field configured. */
+export async function setNote(octokit: Octokit, ctx: ProjectContext, itemId: string, text: string): Promise<void> {
+  if (!ctx.noteFieldId) return
+  await octokit.graphql(
+    `mutation($p:ID!,$i:ID!,$f:ID!,$t:String!){
+      updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{text:$t}}){ projectV2Item{ id } }
+    }`,
+    { p: ctx.projectId, i: itemId, f: ctx.noteFieldId, t: text },
+  )
+}
+
+/** Clear the freeform note. No-op if the project has no note field configured. */
+export async function clearNote(octokit: Octokit, ctx: ProjectContext, itemId: string): Promise<void> {
+  if (!ctx.noteFieldId) return
+  await octokit.graphql(
+    `mutation($p:ID!,$i:ID!,$f:ID!){
+      clearProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f}){ projectV2Item{ id } }
+    }`,
+    { p: ctx.projectId, i: itemId, f: ctx.noteFieldId },
   )
 }

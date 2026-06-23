@@ -52,6 +52,10 @@ inputs:
     description: 'Name of the board Text field that stores each claim''s expiry as an ISO 8601 UTC datetime (the machine source of truth).'
     required: false
     default: 'Claim Expires'
+  note-field:
+    description: 'Name of the board Text field that holds each claim''s freeform note (scraped from the lines following a `claim` comment). Optional: if the board has no such field, notes are silently ignored.'
+    required: false
+    default: 'Claim Note'
   default-ttl:
     description: 'TTL applied to a bare `claim`. Accepts a duration (e.g. 1h, 7d, 3 weeks, 30d). Set to "none" or "off" to disable expiry entirely for this project.'
     required: false

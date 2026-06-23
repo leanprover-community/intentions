@@ -10,6 +10,7 @@ import {
   setStatus,
   setExpiry,
   clearExpiry,
+  clearNote,
 } from './github/projects.js'
 import { getAssignees, unassign, comment } from './github/issues.js'
 
@@ -128,6 +129,7 @@ async function processCandidate(
 
   await setStatus(octokit, ctx, c.itemId, unclaimedId)
   await clearExpiry(octokit, ctx, c.itemId)
+  await clearNote(octokit, ctx, c.itemId)
   for (const login of assignees) {
     await unassign(repoOctokit, owner, repo, c.issueNumber, login)
   }

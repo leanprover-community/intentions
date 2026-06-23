@@ -31878,6 +31878,7 @@ function readConfig() {
             .map((s) => s.trim())
             .filter(Boolean),
         expiryField: core.getInput('expiry-field') || 'Claim Expires',
+        noteField: core.getInput('note-field') || 'Claim Note',
         defaultTtl,
         maxTtlMs: maxTtl.disabled ? null : maxTtl.ms,
         expireInProgress: core.getBooleanInput('expire-in-progress'),
@@ -31901,25 +31902,38 @@ function boolInput(name, dflt) {
  * whitespace/case) so that prose like "I'll claim this later" does not trigger the bot.
  * This mirrors the original bot's exact-match behavior, extended so `claim` accepts an
  * optional expiry argument.
+ *
+ * `claim` additionally captures a freeform note: the first line carries the command (and
+ * optional expiry), and any following lines are scraped verbatim into `note` (original case
+ * and internal whitespace preserved, outer whitespace trimmed). The other commands stay
+ * strict whole-comment matches — only `claim` carries a note.
  */
 function parseCommand(body) {
     const normalized = body.replace(/\s+/g, ' ').trim().toLowerCase();
     // Check disclaim before claim ("disclaim" contains "claim", but is anchored separately).
     if (normalized === 'disclaim')
         return { kind: 'disclaim' };
-    const claim = normalized.match(/^claim(?:\s+(.*))?$/);
-    if (claim)
-        return { kind: 'claim', expiryArg: claim[1] ?? '' };
     const propose = normalized.match(/^propose\s*(?:pr\s*)?#(\d+)$/);
     if (propose)
         return { kind: 'propose', pr: Number(propose[1]) };
     const withdraw = normalized.match(/^withdraw\s*(?:pr\s*)?#(\d+)$/);
     if (withdraw)
         return { kind: 'withdraw', pr: Number(withdraw[1]) };
+    // claim: match on the first line only; following lines (if any) become the note. Leading blank
+    // lines are tolerated (trimStart) so an accidental newline before `claim` still parses.
+    const fromCommand = body.trimStart();
+    const newlineIdx = fromCommand.search(/\r?\n/);
+    const firstLine = newlineIdx === -1 ? fromCommand : fromCommand.slice(0, newlineIdx);
+    const note = newlineIdx === -1 ? '' : fromCommand.slice(newlineIdx).trim();
+    const firstNormalized = firstLine.replace(/\s+/g, ' ').trim().toLowerCase();
+    const claim = firstNormalized.match(/^claim(?:\s+(.*))?$/);
+    if (claim)
+        return { kind: 'claim', expiryArg: claim[1] ?? '', note };
     return null;
 }
 
 ;// CONCATENATED MODULE: ./src/github/projects.ts
+
 const PAGE = 50;
 /** Find a Projects v2 board by title: first repo-linked, then owner-level. */
 async function resolveProjectId(octokit, owner, repo, title) {
@@ -31960,8 +31974,8 @@ async function resolveProjectId(octokit, owner, repo, title) {
     } while (cursor);
     throw new Error(`Could not find a Projects v2 board titled ${JSON.stringify(want)} linked to ${owner}/${repo} or owned by ${owner}. Check the title and that the token can see the board.`);
 }
-/** Load the status single-select field (id + options) and the expiry text field id. */
-async function loadFields(octokit, projectId, statusFieldName, expiryFieldName) {
+/** Load the status single-select field (id + options) and the expiry/note text field ids. */
+async function loadFields(octokit, projectId, statusFieldName, expiryFieldName, noteFieldName) {
     const nodes = [];
     let cursor = null;
     do {
@@ -32003,7 +32017,21 @@ async function loadFields(octokit, projectId, statusFieldName, expiryFieldName) 
         }
         expiryFieldId = expiry.id;
     }
-    return { statusFieldId: status.id, statusOptionIdByName, statusNameById, expiryFieldId };
+    // The note field is optional. Unlike expiry, a wrong-typed field here disables notes with a
+    // warning rather than failing the whole action: the default name "Claim Note" may collide with
+    // a pre-existing field on a board that never opts into notes, and that must not break command,
+    // sweep, or lifecycle runs.
+    let noteFieldId = null;
+    const note = nodes.find((n) => n.name === noteFieldName);
+    if (note) {
+        if (note.__typename !== 'ProjectV2Field' || note.dataType !== 'TEXT') {
+            core.warning(`Note field ${JSON.stringify(noteFieldName)} is a ${note.dataType ?? note.__typename}, not a Text field; claim notes are disabled. Make it a Text field or point note-field at a different field.`);
+        }
+        else {
+            noteFieldId = note.id;
+        }
+    }
+    return { statusFieldId: status.id, statusOptionIdByName, statusNameById, expiryFieldId, noteFieldId };
 }
 function readItemState(itemId, fieldValues, statusFieldId, expiryFieldId) {
     let statusOptionId = null;
@@ -32126,6 +32154,22 @@ async function clearExpiry(octokit, ctx, itemId) {
       clearProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f}){ projectV2Item{ id } }
     }`, { p: ctx.projectId, i: itemId, f: ctx.expiryFieldId });
 }
+/** Write the freeform note text. No-op if the project has no note field configured. */
+async function setNote(octokit, ctx, itemId, text) {
+    if (!ctx.noteFieldId)
+        return;
+    await octokit.graphql(`mutation($p:ID!,$i:ID!,$f:ID!,$t:String!){
+      updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{text:$t}}){ projectV2Item{ id } }
+    }`, { p: ctx.projectId, i: itemId, f: ctx.noteFieldId, t: text });
+}
+/** Clear the freeform note. No-op if the project has no note field configured. */
+async function clearNote(octokit, ctx, itemId) {
+    if (!ctx.noteFieldId)
+        return;
+    await octokit.graphql(`mutation($p:ID!,$i:ID!,$f:ID!){
+      clearProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f}){ projectV2Item{ id } }
+    }`, { p: ctx.projectId, i: itemId, f: ctx.noteFieldId });
+}
 
 ;// CONCATENATED MODULE: ./src/github/issues.ts
 async function getAssignees(octokit, owner, repo, issue_number) {
@@ -32234,15 +32278,45 @@ function isTerminal(cfg, statusName) {
 
 
 
+
+/** Project v2 text fields are bounded; cap the scraped note so a long comment can't fail the write. */
+const MAX_NOTE_LENGTH = 1024;
 /**
- * Handle `claim [expiry]`.
+ * Record the freeform note scraped from the claim comment.
+ *
+ * With a non-empty note: writes it (truncated to a safe length) when the board has a note field,
+ * else logs and ignores it (notes are an optional convenience). With an empty note: a no-op,
+ * unless `clearIfEmpty` is set — fresh claims pass that so a new claimant never inherits a stale
+ * note left over from a failed clear or a manual board edit; renews leave the holder's note as-is.
+ *
+ * Truncation iterates by code point (spread), so it can't split a surrogate pair and store
+ * broken Unicode for notes ending in an emoji or other non-BMP character.
+ */
+async function writeNote(deps, itemId, note, clearIfEmpty = false) {
+    const { octokit, ctx } = deps;
+    const trimmed = note.trim();
+    if (!trimmed) {
+        if (clearIfEmpty)
+            await clearNote(octokit, ctx, itemId);
+        return;
+    }
+    if (!ctx.noteFieldId) {
+        core.info(`A claim note was provided but the board has no "${deps.cfg.noteField}" Text field; ignoring it.`);
+        return;
+    }
+    const chars = [...trimmed];
+    const text = chars.length > MAX_NOTE_LENGTH ? `${chars.slice(0, MAX_NOTE_LENGTH - 1).join('')}…` : trimmed;
+    await setNote(octokit, ctx, itemId, text);
+}
+/**
+ * Handle `claim [expiry]` plus an optional freeform note (the lines following the command).
  *
  * Resolution order (Codex hardening): load item + assignees + status FIRST, then branch.
  * If the actor already holds the claim, treat this as a renew/extend; otherwise require an
  * Unclaimed item with no assignees. Writes are ordered to fail closed: status + expiry are
  * set before assignment, so the sweep never sees a Claimed item with a missing expiry.
  */
-async function handleClaim(deps, expiryArg) {
+async function handleClaim(deps, expiryArg, note) {
     const { octokit, repoOctokit, cfg, ctx, owner, repo, issueNumber, actor } = deps;
     const now = new Date();
     const item = await getIssueItem(octokit, owner, repo, issueNumber, ctx);
@@ -32260,7 +32334,12 @@ async function handleClaim(deps, expiryArg) {
     // ---- Renew / extend path -------------------------------------------------
     if (actorHolds) {
         if (!expiryEnabled(cfg)) {
-            await comment(repoOctokit, owner, repo, issueNumber, `@${actor} you already hold this claim. Expiry is disabled for this project, so there's nothing to renew.`);
+            // No TTL to extend, but the holder can still attach/update a note.
+            const updatedNote = Boolean(note.trim()) && Boolean(ctx.noteFieldId);
+            await writeNote(deps, item.itemId, note);
+            await comment(repoOctokit, owner, repo, issueNumber, updatedNote
+                ? `@${actor} note updated.`
+                : `@${actor} you already hold this claim. Expiry is disabled for this project, so there's nothing to renew.`);
             return;
         }
         const res = resolveExpiry(expiryArg, now, cfg.defaultTtl, cfg.maxTtlMs);
@@ -32269,6 +32348,7 @@ async function handleClaim(deps, expiryArg) {
             return;
         }
         await setExpiry(octokit, ctx, item.itemId, toStorage(res.expiry));
+        await writeNote(deps, item.itemId, note);
         await comment(repoOctokit, owner, repo, issueNumber, `@${actor} claim renewed — now expires **${formatExpiry(res.expiry)}**.`);
         return;
     }
@@ -32286,8 +32366,9 @@ async function handleClaim(deps, expiryArg) {
     if (!expiryEnabled(cfg)) {
         await setStatus(octokit, ctx, item.itemId, claimedId);
         await issues_assign(repoOctokit, owner, repo, issueNumber, actor);
-        const note = expiryArg.trim() ? ' (expiry ignored: this project doesn\'t track claim expiry)' : '';
-        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} you've claimed this task.${note}`);
+        await writeNote(deps, item.itemId, note, true);
+        const suffix = expiryArg.trim() ? ' (expiry ignored: this project doesn\'t track claim expiry)' : '';
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} you've claimed this task.${suffix}`);
         return;
     }
     const res = resolveExpiry(expiryArg, now, cfg.defaultTtl, cfg.maxTtlMs);
@@ -32301,6 +32382,7 @@ async function handleClaim(deps, expiryArg) {
     await setExpiry(octokit, ctx, item.itemId, toStorage(res.expiry));
     await setStatus(octokit, ctx, item.itemId, claimedId);
     await issues_assign(repoOctokit, owner, repo, issueNumber, actor);
+    await writeNote(deps, item.itemId, note, true);
     const lines = [`@${actor} you've claimed this task — it expires **${formatExpiry(res.expiry)}**.`];
     if (res.usedDefault) {
         lines.push(`That's the project default. To set your own, comment e.g. \`claim 2w\`, \`claim 5 hours\`, or \`claim 2026-08-01\` — and \`claim <when>\` again any time to extend.`);
@@ -32326,6 +32408,7 @@ async function handleDisclaim(deps) {
     const unclaimedId = requireOption(ctx, cfg.statusUnclaimed);
     await setStatus(octokit, ctx, item.itemId, unclaimedId);
     await clearExpiry(octokit, ctx, item.itemId);
+    await clearNote(octokit, ctx, item.itemId);
     await unassign(repoOctokit, owner, repo, issueNumber, actor);
     await comment(repoOctokit, owner, repo, issueNumber, `@${actor} you've released this task — it's available again.`);
 }
@@ -32536,6 +32619,7 @@ async function processCandidate(octokit, repoOctokit, cfg, ctx, c, now, onExpire
         throw new Error(`No "${cfg.statusUnclaimed}" status option.`);
     await setStatus(octokit, ctx, c.itemId, unclaimedId);
     await clearExpiry(octokit, ctx, c.itemId);
+    await clearNote(octokit, ctx, c.itemId);
     for (const login of assignees) {
         await unassign(repoOctokit, owner, repo, c.issueNumber, login);
     }
@@ -32764,7 +32848,7 @@ async function main() {
     let ctx;
     try {
         const projectId = await resolveProjectId(octokit, owner, repo, cfg.projectTitle);
-        const fields = await loadFields(octokit, projectId, cfg.statusField, cfg.expiryField);
+        const fields = await loadFields(octokit, projectId, cfg.statusField, cfg.expiryField, cfg.noteField);
         ctx = { projectId, ...fields };
     }
     catch (err) {
@@ -32812,7 +32896,7 @@ async function main() {
     };
     switch (command.kind) {
         case 'claim':
-            await handleClaim(deps, command.expiryArg);
+            await handleClaim(deps, command.expiryArg, command.note);
             break;
         case 'disclaim':
             await handleDisclaim(deps);

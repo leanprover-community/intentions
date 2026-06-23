@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   let ctx: ProjectContext
   try {
     const projectId = await resolveProjectId(octokit, owner, repo, cfg.projectTitle)
-    const fields = await loadFields(octokit, projectId, cfg.statusField, cfg.expiryField)
+    const fields = await loadFields(octokit, projectId, cfg.statusField, cfg.expiryField, cfg.noteField)
     ctx = { projectId, ...fields }
   } catch (err) {
     core.setFailed(
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
 
   switch (command.kind) {
     case 'claim':
-      await handleClaim(deps, command.expiryArg)
+      await handleClaim(deps, command.expiryArg, command.note)
       break
     case 'disclaim':
       await handleDisclaim(deps)

@@ -17,6 +17,7 @@ export interface Config {
   statusCompleted: string
   terminalStatuses: string[]
   expiryField: string
+  noteField: string
   defaultTtl: TtlSetting
   maxTtlMs: number | null
   expireInProgress: boolean
@@ -64,6 +65,7 @@ export function readConfig(): Config {
       .map((s) => s.trim())
       .filter(Boolean),
     expiryField: core.getInput('expiry-field') || 'Claim Expires',
+    noteField: core.getInput('note-field') || 'Claim Note',
     defaultTtl,
     maxTtlMs: maxTtl.disabled ? null : maxTtl.ms,
     expireInProgress: core.getBooleanInput('expire-in-progress'),

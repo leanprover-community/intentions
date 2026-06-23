@@ -43,6 +43,13 @@ test('auto-add defaults true and is overridable', () => {
   assert.equal(readConfig().autoAdd, false)
 })
 
+test('note-field defaults and is overridable', () => {
+  setInputs(required)
+  assert.equal(readConfig().noteField, 'Claim Note')
+  setInputs({ ...required, 'note-field': 'Notes' })
+  assert.equal(readConfig().noteField, 'Notes')
+})
+
 test('repo-token falls back to the project token when unset', () => {
   setInputs(required)
   const cfg = readConfig()

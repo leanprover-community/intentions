@@ -25,11 +25,20 @@ used (not a Date field) so hour-granularity TTLs are representable.
 > If you set `default-ttl: none` (expiry disabled), you do **not** need this field, and you
 > can drop the `schedule` trigger from the workflow (the sweep then does nothing).
 
-## 3. Tasks
+## 3. Claim Note (text, optional)
+
+A **Text** field named `Claim Note`. When someone claims a task, any lines following the
+`claim` command in their comment are scraped verbatim into this field, so the board shows what
+each claimant said they're doing. It's cleared when the claim is released.
+
+> This field is optional. If the board doesn't have it, notes are silently ignored. Rename it
+> with the `note-field` input.
+
+## 4. Tasks
 
 Add issues to the board and set their `Status` to `Unclaimed`. Each such issue is claimable.
 
-## 4. Authentication
+## 5. Authentication
 
 The bot needs to read/write the project and assign/comment on issues. The default
 `GITHUB_TOKEN` **cannot** write org-level Projects v2, so a separate credential is required.
