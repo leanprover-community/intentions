@@ -51,6 +51,41 @@ contributor who opens a linked PR never has to type `propose`. Every transition 
 the card's current status, so manual board edits aren't overwritten. *In Review* and
 *Completed* are skipped automatically if your board has no such option.
 
+### The board as a state machine
+
+Each issue is one task, and its `Status` column is the state. Solid edges are the forward
+path; dotted edges return a task to an earlier column. Every edge can be driven by either a
+**comment command** or an **automatic event** — the two tables above spell out which — so a
+project can run on comments, on PR events, or any mix.
+
+```mermaid
+%%{init: {'themeVariables':{'edgeLabelBackground':'#ffffff00'},'flowchart':{'rankSpacing':38}}}%%
+flowchart TB
+    S(( )):::start -->|issue opened| U
+    U([Unclaimed]):::unc -->|claim| C([Claimed]):::clm
+    C -->|draft PR opened| P([In Progress]):::prog
+    C -->|PR opened| R([In Review]):::rev
+    P -->|ready for review| R
+    R -->|merged| D([Completed]):::done
+    C -.->|disclaim/expiry| U
+    P -.->|withdraw/closed| C
+    R -.->|closed| C
+    D -.->|reopened| U
+
+    classDef start fill:#8b96a3,stroke:#8b96a3
+    classDef unc  fill:#dde2e8,stroke:#5f6b7a,color:#1f2933,font-weight:bold,font-size:21px
+    classDef clm  fill:#cfe2ff,stroke:#2f6fed,color:#11399b,font-weight:bold,font-size:21px
+    classDef prog fill:#ffe7a8,stroke:#d9920a,color:#7a4d06,font-weight:bold,font-size:21px
+    classDef rev  fill:#ead4ff,stroke:#8b3fd6,color:#5a1d96,font-weight:bold,font-size:21px
+    classDef done fill:#c5edd2,stroke:#1f9d57,color:#0f5c33,font-weight:bold,font-size:21px
+```
+
+Closing an issue moves it straight to *Completed* from any column. The column names are the
+defaults; rename them with the `status-*` inputs. This adapts Figure 7 of the
+[Equational Theories Project paper](https://arxiv.org/abs/2412.07067), where Pietro Monticone
+and Shreyas Srinivas first drew this flow — extended here with the expiry sweep, auto-add, and
+the automatic PR-driven edges.
+
 ## Adoption
 
 A three-step recipe. (To adopt without any expiry behavior, see step 2's note — you can skip
