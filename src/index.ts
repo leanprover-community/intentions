@@ -5,6 +5,7 @@ import { parseCommand } from './command.js'
 import { resolveProjectId, loadFields, type ProjectContext } from './github/projects.js'
 import { type Deps } from './commands/deps.js'
 import { handleClaim } from './commands/claim.js'
+import { handleAssign } from './commands/assign.js'
 import { handleDisclaim } from './commands/disclaim.js'
 import { handlePropose } from './commands/propose.js'
 import { handleWithdraw } from './commands/withdraw.js'
@@ -83,6 +84,9 @@ async function main(): Promise<void> {
   switch (command.kind) {
     case 'claim':
       await handleClaim(deps, command.expiryArg, command.note)
+      break
+    case 'assign':
+      await handleAssign(deps, command.target, command.expiryArg, command.note)
       break
     case 'disclaim':
       await handleDisclaim(deps)

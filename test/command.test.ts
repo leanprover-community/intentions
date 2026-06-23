@@ -27,6 +27,22 @@ test('claim: scrapes following lines into the note (verbatim, trimmed)', () => {
     { kind: 'claim', expiryArg: '', note: 'note here' })
 })
 
+test('assign: target, expiry, and note', () => {
+  assert.deepEqual(parseCommand('assign @bob'), { kind: 'assign', target: 'bob', expiryArg: '', note: '' })
+  assert.deepEqual(parseCommand('assign @bob 2w'), { kind: 'assign', target: 'bob', expiryArg: '2w', note: '' })
+  assert.deepEqual(parseCommand('ASSIGN @Alice-Smith 2026-08-01'),
+    { kind: 'assign', target: 'Alice-Smith', expiryArg: '2026-08-01', note: '' })
+  // login case is preserved; following lines become the note.
+  assert.deepEqual(parseCommand('assign @bob 2w\nHanding this off — you know it best.'),
+    { kind: 'assign', target: 'bob', expiryArg: '2w', note: 'Handing this off — you know it best.' })
+})
+
+test('assign: requires a leading @ so prose does not trigger', () => {
+  assert.equal(parseCommand('assign this to bob'), null)
+  assert.equal(parseCommand('please assign @bob'), null) // must start with the command
+  assert.equal(parseCommand('assign'), null) // no target
+})
+
 test('disclaim is distinguished from claim', () => {
   assert.deepEqual(parseCommand('disclaim'), { kind: 'disclaim' })
   // "disclaim" must not be read as a claim with arg

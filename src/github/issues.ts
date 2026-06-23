@@ -52,6 +52,35 @@ export async function getOpenClosingPullNumbers(octokit: Octokit, owner: string,
   return nodes.filter((n) => n.state === 'OPEN').map((n) => n.number)
 }
 
+/**
+ * The actor's permission on the repo, used to gate `assign` (registering someone else is an act of
+ * authority that `claim` doesn't need). Returns the legacy `permission` ('admin' | 'write' | 'read'
+ * | 'none') and the granular `role_name` ('admin' | 'maintain' | 'write' | 'triage' | 'read' | …)
+ * when GitHub supplies it. A non-collaborator yields `{ permission: 'none' }` rather than throwing.
+ */
+export async function getCollaboratorPermission(
+  octokit: Octokit, owner: string, repo: string, username: string,
+): Promise<{ permission: string; roleName: string | null }> {
+  try {
+    const res = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username })
+    return { permission: res.data.permission, roleName: (res.data as { role_name?: string }).role_name ?? null }
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return { permission: 'none', roleName: null }
+    throw err
+  }
+}
+
+/** True if `username` may be assigned to issues in this repo (404 from the check ⇒ not assignable). */
+export async function canBeAssigned(octokit: Octokit, owner: string, repo: string, assignee: string): Promise<boolean> {
+  try {
+    await octokit.rest.issues.checkUserCanBeAssigned({ owner, repo, assignee })
+    return true
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return false
+    throw err
+  }
+}
+
 export async function assign(octokit: Octokit, owner: string, repo: string, issue_number: number, login: string): Promise<void> {
   await octokit.rest.issues.addAssignees({ owner, repo, issue_number, assignees: [login] })
 }

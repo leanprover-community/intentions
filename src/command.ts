@@ -6,14 +6,16 @@
  * This mirrors the original bot's exact-match behavior, extended so `claim` accepts an
  * optional expiry argument.
  *
- * `claim` additionally captures a freeform note: the first line carries the command (and
- * optional expiry), and any following lines are scraped verbatim into `note` (original case
- * and internal whitespace preserved, outer whitespace trimmed). The other commands stay
- * strict whole-comment matches — only `claim` carries a note.
+ * `claim` (and `assign`, which registers someone else) additionally captures a freeform note:
+ * the first line carries the command (and optional expiry), and any following lines are scraped
+ * verbatim into `note` (original case and internal whitespace preserved, outer whitespace
+ * trimmed). The other commands stay strict whole-comment matches — only `claim`/`assign` carry a
+ * note.
  */
 
 export type Command =
   | { kind: 'claim'; expiryArg: string; note: string }
+  | { kind: 'assign'; target: string; expiryArg: string; note: string }
   | { kind: 'disclaim' }
   | { kind: 'propose'; pr: number }
   | { kind: 'withdraw'; pr: number }
@@ -39,6 +41,13 @@ export function parseCommand(body: string): Command | null {
   const firstNormalized = firstLine.replace(/\s+/g, ' ').trim().toLowerCase()
   const claim = firstNormalized.match(/^claim(?:\s+(.*))?$/)
   if (claim) return { kind: 'claim', expiryArg: claim[1] ?? '', note }
+
+  // assign @login [expiry]: like claim, but registers someone else. The `@` is required so prose
+  // ("assign this to bob") can't trigger it. The login is captured with original case (matched off
+  // firstLine, not the lowercased form) so the confirmation @-mention reads naturally.
+  const firstCased = firstLine.replace(/\s+/g, ' ').trim()
+  const assign = firstCased.match(/^assign\s+@([A-Za-z0-9-]+)(?:\s+(.*))?$/i)
+  if (assign) return { kind: 'assign', target: assign[1] ?? '', expiryArg: assign[2] ?? '', note }
 
   return null
 }

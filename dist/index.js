@@ -31903,10 +31903,11 @@ function boolInput(name, dflt) {
  * This mirrors the original bot's exact-match behavior, extended so `claim` accepts an
  * optional expiry argument.
  *
- * `claim` additionally captures a freeform note: the first line carries the command (and
- * optional expiry), and any following lines are scraped verbatim into `note` (original case
- * and internal whitespace preserved, outer whitespace trimmed). The other commands stay
- * strict whole-comment matches — only `claim` carries a note.
+ * `claim` (and `assign`, which registers someone else) additionally captures a freeform note:
+ * the first line carries the command (and optional expiry), and any following lines are scraped
+ * verbatim into `note` (original case and internal whitespace preserved, outer whitespace
+ * trimmed). The other commands stay strict whole-comment matches — only `claim`/`assign` carry a
+ * note.
  */
 function parseCommand(body) {
     const normalized = body.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -31929,6 +31930,13 @@ function parseCommand(body) {
     const claim = firstNormalized.match(/^claim(?:\s+(.*))?$/);
     if (claim)
         return { kind: 'claim', expiryArg: claim[1] ?? '', note };
+    // assign @login [expiry]: like claim, but registers someone else. The `@` is required so prose
+    // ("assign this to bob") can't trigger it. The login is captured with original case (matched off
+    // firstLine, not the lowercased form) so the confirmation @-mention reads naturally.
+    const firstCased = firstLine.replace(/\s+/g, ' ').trim();
+    const assign = firstCased.match(/^assign\s+@([A-Za-z0-9-]+)(?:\s+(.*))?$/i);
+    if (assign)
+        return { kind: 'assign', target: assign[1] ?? '', expiryArg: assign[2] ?? '', note };
     return null;
 }
 
@@ -32209,6 +32217,35 @@ async function getOpenClosingPullNumbers(octokit, owner, repo, issue_number) {
     const nodes = res.repository?.issue?.closedByPullRequestsReferences?.nodes ?? [];
     return nodes.filter((n) => n.state === 'OPEN').map((n) => n.number);
 }
+/**
+ * The actor's permission on the repo, used to gate `assign` (registering someone else is an act of
+ * authority that `claim` doesn't need). Returns the legacy `permission` ('admin' | 'write' | 'read'
+ * | 'none') and the granular `role_name` ('admin' | 'maintain' | 'write' | 'triage' | 'read' | …)
+ * when GitHub supplies it. A non-collaborator yields `{ permission: 'none' }` rather than throwing.
+ */
+async function getCollaboratorPermission(octokit, owner, repo, username) {
+    try {
+        const res = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
+        return { permission: res.data.permission, roleName: res.data.role_name ?? null };
+    }
+    catch (err) {
+        if (err.status === 404)
+            return { permission: 'none', roleName: null };
+        throw err;
+    }
+}
+/** True if `username` may be assigned to issues in this repo (404 from the check ⇒ not assignable). */
+async function canBeAssigned(octokit, owner, repo, assignee) {
+    try {
+        await octokit.rest.issues.checkUserCanBeAssigned({ owner, repo, assignee });
+        return true;
+    }
+    catch (err) {
+        if (err.status === 404)
+            return false;
+        throw err;
+    }
+}
 async function issues_assign(octokit, owner, repo, issue_number, login) {
     await octokit.rest.issues.addAssignees({ owner, repo, issue_number, assignees: [login] });
 }
@@ -32272,22 +32309,18 @@ function isTerminal(cfg, statusName) {
     return cfg.terminalStatuses.some((s) => s.toLowerCase() === statusName.toLowerCase());
 }
 
-;// CONCATENATED MODULE: ./src/commands/claim.ts
-
-
-
-
+;// CONCATENATED MODULE: ./src/commands/note.ts
 
 
 /** Project v2 text fields are bounded; cap the scraped note so a long comment can't fail the write. */
 const MAX_NOTE_LENGTH = 1024;
 /**
- * Record the freeform note scraped from the claim comment.
+ * Record the freeform note scraped from a claim/assign comment.
  *
  * With a non-empty note: writes it (truncated to a safe length) when the board has a note field,
  * else logs and ignores it (notes are an optional convenience). With an empty note: a no-op,
- * unless `clearIfEmpty` is set — fresh claims pass that so a new claimant never inherits a stale
- * note left over from a failed clear or a manual board edit; renews leave the holder's note as-is.
+ * unless `clearIfEmpty` is set — fresh claims/assignments pass that so a new holder never inherits a
+ * stale note left over from a failed clear or a manual board edit; renews leave the note as-is.
  *
  * Truncation iterates by code point (spread), so it can't split a surrogate pair and store
  * broken Unicode for notes ending in an emoji or other non-BMP character.
@@ -32308,6 +32341,14 @@ async function writeNote(deps, itemId, note, clearIfEmpty = false) {
     const text = chars.length > MAX_NOTE_LENGTH ? `${chars.slice(0, MAX_NOTE_LENGTH - 1).join('')}…` : trimmed;
     await setNote(octokit, ctx, itemId, text);
 }
+
+;// CONCATENATED MODULE: ./src/commands/claim.ts
+
+
+
+
+
+
 /**
  * Handle `claim [expiry]` plus an optional freeform note (the lines following the command).
  *
@@ -32388,6 +32429,117 @@ async function handleClaim(deps, expiryArg, note) {
         lines.push(`That's the project default. To set your own, comment e.g. \`claim 2w\`, \`claim 5 hours\`, or \`claim 2026-08-01\` — and \`claim <when>\` again any time to extend.`);
     }
     await comment(repoOctokit, owner, repo, issueNumber, lines.join('\n\n'));
+}
+
+;// CONCATENATED MODULE: ./src/commands/assign.ts
+
+
+
+
+
+
+/** Permission levels that may register others on a task: write or above (incl. triage/maintain). */
+function canAssign(perm) {
+    if (perm.permission === 'admin' || perm.permission === 'write')
+        return true;
+    // The legacy `permission` field collapses triage→read, so consult the granular role for triage.
+    return perm.roleName === 'triage' || perm.roleName === 'maintain';
+}
+/**
+ * Handle `assign @target [expiry]` plus an optional freeform note.
+ *
+ * Unlike `claim` (egalitarian self-service), `assign` is an act of authority: only a write/triage
+ * collaborator may register someone else, and it overrides an existing claim (the main reason to
+ * assign is handing off abandoned or misallocated work). The board lifecycle, TTL, and note all
+ * carry over from `claim` unchanged.
+ *
+ * When the target already holds the task this is a refresh: like a `claim` renewal it extends the
+ * expiry and updates the note but leaves the status untouched, so a maintainer re-upping someone's
+ * active *In Progress* task doesn't drag the board back to *Claimed*. Taking a task over instead
+ * confirms the new assignee actually stuck (GitHub silently drops assignees it won't accept) before
+ * it removes the previous holder or flips the board, so a handoff can never strand a *Claimed* card
+ * with nobody on it.
+ */
+async function handleAssign(deps, target, expiryArg, note) {
+    const { octokit, repoOctokit, cfg, ctx, owner, repo, issueNumber, actor } = deps;
+    const now = new Date();
+    // ---- Authority gate ------------------------------------------------------
+    const perm = await getCollaboratorPermission(repoOctokit, owner, repo, actor);
+    if (!canAssign(perm)) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} only collaborators with write or triage access can register someone else on a task. You can \`claim\` it for yourself instead.`);
+        return;
+    }
+    const item = await getIssueItem(octokit, owner, repo, issueNumber, ctx);
+    if (!item) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this issue isn't on the **${cfg.projectTitle}** board yet, so it can't be assigned. A maintainer needs to add it first.`);
+        return;
+    }
+    const assignees = await getAssignees(repoOctokit, owner, repo, issueNumber);
+    const statusName = item.statusOptionId ? ctx.statusNameById.get(item.statusOptionId) ?? null : null;
+    const claimedId = requireOption(ctx, cfg.statusClaimed);
+    const inProgressId = optionId(ctx, cfg.statusInProgress);
+    const targetHolds = assignees.some((a) => a.toLowerCase() === target.toLowerCase()) &&
+        (item.statusOptionId === claimedId || (inProgressId !== null && item.statusOptionId === inProgressId));
+    // Terminal statuses (In Review / Completed) are recognized but not managed, same as `claim`.
+    if (isTerminal(cfg, statusName)) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this task is **${statusName}**, so there's nothing to assign.`);
+        return;
+    }
+    // ---- Refresh path: target already holds it — extend, don't move the board ----
+    if (targetHolds) {
+        if (!expiryEnabled(cfg)) {
+            await writeNote(deps, item.itemId, note);
+            await comment(repoOctokit, owner, repo, issueNumber, `@${target}, @${actor} has refreshed your registration on this task. Expiry is disabled for this project.`);
+            return;
+        }
+        const res = resolveExpiry(expiryArg, now, cfg.defaultTtl, cfg.maxTtlMs);
+        if (!res.ok) {
+            await comment(repoOctokit, owner, repo, issueNumber, `@${actor} ${res.reason}`);
+            return;
+        }
+        await setExpiry(octokit, ctx, item.itemId, toStorage(res.expiry));
+        await writeNote(deps, item.itemId, note);
+        await comment(repoOctokit, owner, repo, issueNumber, `@${target}, @${actor} has refreshed your registration on this task. This registration expires **${formatExpiry(res.expiry)}**.`);
+        return;
+    }
+    // ---- Take-over path: validate the target, then hand off ------------------
+    // Validate before any write so a bad name can't disturb the board at all.
+    if (!(await canBeAssigned(repoOctokit, owner, repo, target))) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} @${target} can't be assigned to issues in ${owner}/${repo} — they need read access or org membership first.`);
+        return;
+    }
+    let expiry = null;
+    if (expiryEnabled(cfg)) {
+        const res = resolveExpiry(expiryArg, now, cfg.defaultTtl, cfg.maxTtlMs);
+        if (!res.ok) {
+            await comment(repoOctokit, owner, repo, issueNumber, `@${actor} ${res.reason}`);
+            return;
+        }
+        expiry = res.expiry;
+    }
+    // Add the new assignee FIRST and confirm GitHub kept them (it silently drops users it won't
+    // accept, even past the canBeAssigned probe — assignability can change in the window). Only once
+    // the target is confirmed do we touch expiry/status or remove the previous holder, so a failed
+    // handoff leaves the task exactly as it was rather than Claimed-with-nobody.
+    await issues_assign(repoOctokit, owner, repo, issueNumber, target);
+    const afterAssign = await getAssignees(repoOctokit, owner, repo, issueNumber);
+    if (!afterAssign.some((a) => a.toLowerCase() === target.toLowerCase())) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} GitHub didn't accept @${target} as an assignee, so I've left this task as it was.`);
+        return;
+    }
+    // Fail-closed order: expiry before the Claimed status, then drop the prior holder(s), then note.
+    if (expiry)
+        await setExpiry(octokit, ctx, item.itemId, toStorage(expiry));
+    await setStatus(octokit, ctx, item.itemId, claimedId);
+    for (const a of assignees) {
+        if (a.toLowerCase() !== target.toLowerCase())
+            await unassign(repoOctokit, owner, repo, issueNumber, a);
+    }
+    await writeNote(deps, item.itemId, note, true);
+    const expiryLine = expiry
+        ? ` This registration expires **${formatExpiry(expiry)}**.`
+        : expiryArg.trim() ? ' (expiry ignored: this project doesn\'t track claim expiry)' : '';
+    await comment(repoOctokit, owner, repo, issueNumber, `@${target}, @${actor} has registered you as working on this task.${expiryLine}`);
 }
 
 ;// CONCATENATED MODULE: ./src/commands/disclaim.ts
@@ -32836,6 +32988,7 @@ async function casSetStatus(octokit, ctx, owner, repo, num, seen, targetOptionId
 
 
 
+
 async function main() {
     const cfg = readConfig();
     const octokit = (0,github.getOctokit)(cfg.token);
@@ -32897,6 +33050,9 @@ async function main() {
     switch (command.kind) {
         case 'claim':
             await handleClaim(deps, command.expiryArg, command.note);
+            break;
+        case 'assign':
+            await handleAssign(deps, command.target, command.expiryArg, command.note);
             break;
         case 'disclaim':
             await handleDisclaim(deps);

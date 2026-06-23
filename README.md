@@ -21,6 +21,7 @@ Comment on an issue that's on the project board:
 | `claim 2w` · `claim 5 hours` · `claim 2026-08-01` | Claim with a custom expiry (duration or date). |
 | `claim …` (again, as the holder) | Renew / extend your claim. |
 | `claim` + following lines | Attach a freeform note (see below). |
+| `assign @bob` · `assign @bob 2w` | Register **someone else** on the task (see below). |
 | `disclaim` | Release a task you hold. |
 | `propose PR #123` | Link your PR; move the task to *In Progress* (refreshes the TTL). |
 | `withdraw PR #123` | Move back to *Claimed* (you keep the claim). |
@@ -32,6 +33,22 @@ helpful message.
 
 The board's `Status` field moves `Unclaimed → Claimed → In Progress`, and a scheduled
 **sweep** returns expired claims to `Unclaimed`.
+
+### Assigning someone else
+
+`claim` is self-service: anyone can take an unclaimed task. `assign @bob` is its maintainer-facing
+counterpart — it registers *someone else* on a task. Because directing another person's work is an
+act of authority, only commenters with **write or triage** access to the repo may use it; everyone
+else is told to `claim` it themselves. The target must be assignable (a collaborator, or an org
+member with read access).
+
+Unlike `claim`, `assign` **overrides an existing claim**: handing off abandoned or misallocated work
+is the main reason to use it, so the previous holder is replaced. It otherwise behaves exactly like
+`claim` — same expiry grammar (`assign @bob 2w`, `assign @bob 2026-08-01`), the same default and
+maximum TTL, and the same freeform note on following lines. The assignee can then renew with `claim`,
+or step back with `disclaim`. The bot's confirmation is addressed to the assignee, for example:
+
+> @bob, @alice has registered you as working on this task. This registration expires **Aug 1, 2026**.
 
 ### Claim notes
 
@@ -80,7 +97,7 @@ project can run on comments, on PR events, or any mix.
 %%{init: {'themeVariables':{'edgeLabelBackground':'#ffffff00'},'flowchart':{'rankSpacing':38}}}%%
 flowchart TB
     S(( )):::start -->|issue opened| U
-    U([Unclaimed]):::unc -->|claim| C([Claimed]):::clm
+    U([Unclaimed]):::unc -->|claim / assign| C([Claimed]):::clm
     C -->|draft PR opened| P([In Progress]):::prog
     C -->|PR opened| R([In Review]):::rev
     P -->|ready for review| R
