@@ -32145,6 +32145,21 @@ async function getClosingIssueNumbers(octokit, owner, repo, pull_number) {
         .filter((n) => n.repository.owner.login.toLowerCase() === owner.toLowerCase() && n.repository.name.toLowerCase() === repo.toLowerCase())
         .map((n) => n.number);
 }
+/**
+ * Numbers of still-open PRs that GitHub records as closing this issue. Used when an unmerged
+ * PR closes, so we only revert the board when no other open PR is still working the issue.
+ */
+async function getOpenClosingPullNumbers(octokit, owner, repo, issue_number) {
+    const res = await octokit.graphql(`query($owner:String!,$repo:String!,$num:Int!){
+      repository(owner:$owner,name:$repo){
+        issue(number:$num){
+          closedByPullRequestsReferences(first:20, includeClosedPrs:false){ nodes{ number state } }
+        }
+      }
+    }`, { owner, repo, num: issue_number });
+    const nodes = res.repository?.issue?.closedByPullRequestsReferences?.nodes ?? [];
+    return nodes.filter((n) => n.state === 'OPEN').map((n) => n.number);
+}
 async function issues_assign(octokit, owner, repo, issue_number, login) {
     await octokit.rest.issues.addAssignees({ owner, repo, issue_number, assignees: [login] });
 }
@@ -32644,6 +32659,7 @@ async function applyPullToIssue(octokit, cfg, ctx, owner, repo, num, prNumber, p
     const completed = optionId(ctx, cfg.statusCompleted);
     if (pr.closed) {
         if (pr.merged) {
+            // A merge is terminal truth: complete the task (no CAS — merging always wins).
             if (!completed) {
                 core.warning(`No "${cfg.statusCompleted}" status option; cannot complete #${num}.`);
                 return;
@@ -32654,21 +32670,36 @@ async function applyPullToIssue(octokit, cfg, ctx, owner, repo, num, prNumber, p
             await comment(octokit, owner, repo, num, `:tada: PR #${prNumber} merged; task moved to **${cfg.statusCompleted}**.`);
             return;
         }
-        // Closed without merging: drop an active item back to Claimed, keeping the claim intact.
+        // Closed without merging: drop an active item back to Claimed, keeping the claim intact —
+        // but only if no other open PR still references the issue (don't regress live review work).
         if (claimed && (item.statusOptionId === inProgress || item.statusOptionId === inReview)) {
-            await setStatus(octokit, ctx, item.itemId, claimed);
-            await comment(octokit, owner, repo, num, `PR #${prNumber} was closed without merging; task is back to **${cfg.statusClaimed}** (still yours).`);
+            const others = (await getOpenClosingPullNumbers(octokit, owner, repo, num)).filter((n) => n !== prNumber);
+            if (others.length > 0) {
+                core.info(`#${num}: PR #${prNumber} closed unmerged, but PR(s) ${others.join(', ')} still open; leaving status.`);
+                return;
+            }
+            if (await casSetStatus(octokit, ctx, owner, repo, num, item, claimed)) {
+                await comment(octokit, owner, repo, num, `PR #${prNumber} was closed without merging; task is back to **${cfg.statusClaimed}** (still yours).`);
+            }
         }
         return;
     }
-    // PR is open (opened / reopened / ready_for_review / converted_to_draft).
+    // ---- PR is open (opened / reopened / ready_for_review / converted_to_draft) ----
     if (completed && item.statusOptionId === completed)
         return; // don't reactivate a done task
-    // Auto-claim an unclaimed (or board-only, status-less) issue for the PR author.
-    if (item.statusOptionId === null || item.statusOptionId === unclaimed) {
-        if (pr.author && (await getAssignees(octokit, owner, repo, num)).length === 0) {
-            await issues_assign(octokit, owner, repo, num, pr.author);
-        }
+    // Authorization (mirrors `propose`): the lifecycle may auto-claim a genuinely free task for
+    // the PR author, or advance a task the author already holds — but it must never touch a task
+    // claimed by someone else. This matters because `pull_request_target` runs with the write
+    // token on PRs from forks, where the author is untrusted.
+    const available = item.statusOptionId === null || item.statusOptionId === unclaimed;
+    const assignees = await getAssignees(octokit, owner, repo, num);
+    if (available && assignees.length === 0) {
+        if (pr.author)
+            await issues_assign(octokit, owner, repo, num, pr.author); // auto-claim for the PR author
+    }
+    else if (!pr.author || !assignees.includes(pr.author)) {
+        core.info(`#${num}: held by someone other than ${pr.author || '(unknown author)'}; lifecycle leaves it alone.`);
+        return;
     }
     if (expiryEnabled(cfg)) {
         const res = resolveExpiry('', new Date(), cfg.defaultTtl, cfg.maxTtlMs);
@@ -32684,8 +32715,24 @@ async function applyPullToIssue(octokit, cfg, ctx, owner, repo, num, prNumber, p
     }
     if (item.statusOptionId === target)
         return; // already there; stay quiet (idempotent on re-fires)
-    await setStatus(octokit, ctx, item.itemId, target);
-    await comment(octokit, owner, repo, num, `PR #${prNumber} linked; task moved to **${targetName}**.`);
+    if (await casSetStatus(octokit, ctx, owner, repo, num, item, target)) {
+        await comment(octokit, owner, repo, num, `PR #${prNumber} linked; task moved to **${targetName}**.`);
+    }
+}
+/**
+ * Set status only if the item's status is unchanged since `seen` was read — a compare-and-swap
+ * that re-reads immediately before mutating, so a lifecycle write can't stomp a `claim` /
+ * `disclaim` / `propose` (or another PR event) that raced it. Mirrors the sweep's CAS. Returns
+ * false (and does nothing) if the item moved or vanished in the meantime.
+ */
+async function casSetStatus(octokit, ctx, owner, repo, num, seen, targetOptionId) {
+    const fresh = await getIssueItem(octokit, owner, repo, num, ctx);
+    if (!fresh || fresh.itemId !== seen.itemId || fresh.statusOptionId !== seen.statusOptionId) {
+        core.info(`#${num}: status changed concurrently; skipping lifecycle move.`);
+        return false;
+    }
+    await setStatus(octokit, ctx, fresh.itemId, targetOptionId);
+    return true;
 }
 
 ;// CONCATENATED MODULE: ./src/index.ts

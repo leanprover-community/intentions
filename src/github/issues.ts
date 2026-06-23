@@ -31,6 +31,27 @@ export async function getClosingIssueNumbers(octokit: Octokit, owner: string, re
     .map((n) => n.number)
 }
 
+/**
+ * Numbers of still-open PRs that GitHub records as closing this issue. Used when an unmerged
+ * PR closes, so we only revert the board when no other open PR is still working the issue.
+ */
+export async function getOpenClosingPullNumbers(octokit: Octokit, owner: string, repo: string, issue_number: number): Promise<number[]> {
+  const res: {
+    repository: { issue: { closedByPullRequestsReferences: { nodes: { number: number; state: string }[] } } | null } | null
+  } = await octokit.graphql(
+    `query($owner:String!,$repo:String!,$num:Int!){
+      repository(owner:$owner,name:$repo){
+        issue(number:$num){
+          closedByPullRequestsReferences(first:20, includeClosedPrs:false){ nodes{ number state } }
+        }
+      }
+    }`,
+    { owner, repo, num: issue_number },
+  )
+  const nodes = res.repository?.issue?.closedByPullRequestsReferences?.nodes ?? []
+  return nodes.filter((n) => n.state === 'OPEN').map((n) => n.number)
+}
+
 export async function assign(octokit: Octokit, owner: string, repo: string, issue_number: number, login: string): Promise<void> {
   await octokit.rest.issues.addAssignees({ owner, repo, issue_number, assignees: [login] })
 }

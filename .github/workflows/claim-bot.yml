@@ -117,7 +117,9 @@ jobs:
     # Issue and PR events keep the board in sync without native Project workflows.
     if: github.event_name == 'issues' || github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
-    # Serialize per issue/PR number so concurrent events on the same item don't race.
+    # Serialize repeated events on the same issue/PR. A PR event keys on its PR number, so it
+    # can still overlap a `claim` comment on the linked issue — the action guards that with a
+    # compare-and-swap (re-read status before mutating), the same way the sweep does.
     concurrency:
       group: claim-bot-item-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: false
