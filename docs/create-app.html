@@ -17,6 +17,10 @@
 </head>
 <body>
 <h1>Create an intentions GitHub App</h1>
+<div id="done" style="display:none; background:#dafbe1; border:1px solid #1f883d; border-radius:6px; padding:1rem; margin-bottom:1rem;">
+  <strong>✓ App created.</strong> Now finish the steps under <a href="#after-creating">After creating</a>:
+  generate a private key, copy the App ID, install the App, and set the repo variable and secret.
+</div>
 <p>This pre-fills a GitHub App with exactly the permissions intentions needs
 (Issues + Pull requests read/write, organization Projects read/write, no webhook).
 Enter the account that owns the board and the repo, then click create.</p>
@@ -35,7 +39,7 @@ Enter the account that owns the board and the repo, then click create.</p>
 install the App on the repo that holds your issues. App names are globally unique, so adjust
 the suggested name if it's taken.</p>
 
-<h2>After creating</h2>
+<h2 id="after-creating">After creating</h2>
 <ol>
   <li>On the new App's page, <strong>Generate a private key</strong> (downloads a <code>.pem</code>).</li>
   <li>Note the <strong>App ID</strong>.</li>
@@ -50,7 +54,12 @@ the suggested name if it's taken.</p>
     return {
       name: org ? (org + " intentions") : "intentions",
       url: "https://github.com/leanprover-community/intentions",
-      hook_attributes: { active: false },
+      // GitHub requires hook_attributes.url whenever hook_attributes is present, even with
+      // active:false. The app doesn't use a webhook, so this URL is never called.
+      hook_attributes: { url: "https://github.com/leanprover-community/intentions", active: false },
+      // GitHub's manifest validator rejects the form without a redirect_url. We come back to this
+      // same page; the returned ?code is ignored (you generate the key and copy the App ID by hand).
+      redirect_url: location.origin + location.pathname,
       public: false,
       default_events: [],
       default_permissions: {
@@ -59,6 +68,12 @@ the suggested name if it's taken.</p>
         organization_projects: "write"
       }
     }
+  }
+  // GitHub redirects back here with ?code=... after the app is created. We can't exchange the
+  // code from a static page, so just confirm success and point at the manual follow-up steps.
+  if (new URLSearchParams(location.search).has('code')) {
+    document.getElementById('done').style.display = 'block'
+    document.getElementById('after-creating').scrollIntoView()
   }
   const form = document.getElementById('f')
   form.addEventListener('submit', function () {
