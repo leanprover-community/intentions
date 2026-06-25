@@ -61,6 +61,20 @@ test('shouldAutoAdd: off disables; empty allowlist adds all; allowlist filters (
   assert.equal(shouldAutoAdd(filtered, []), false)
 })
 
+test('claim-on-open defaults false and is overridable', () => {
+  setInputs(required)
+  assert.equal(readConfig().claimOnOpen, false)
+  setInputs({ ...required, 'claim-on-open': 'true' })
+  assert.equal(readConfig().claimOnOpen, true)
+})
+
+test('claim-expiry-field defaults empty and is overridable', () => {
+  setInputs(required)
+  assert.equal(readConfig().claimExpiryField, '')
+  setInputs({ ...required, 'claim-expiry-field': 'Credible expiry date' })
+  assert.equal(readConfig().claimExpiryField, 'Credible expiry date')
+})
+
 test('note-field defaults and is overridable', () => {
   setInputs(required)
   assert.equal(readConfig().noteField, 'Claim Note')

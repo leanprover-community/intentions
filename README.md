@@ -74,7 +74,7 @@ so you don't have to wire up GitHub's native Project automations:
 
 | Event | Effect |
 |---|---|
-| Issue opened | Added to the board as *Unclaimed* (`auto-add`, on by default). |
+| Issue opened | Added to the board as *Unclaimed* (`auto-add`, on by default). With `claim-on-open`, auto-claimed for the issue author, reading the expiry from the issue form — so registering needs only the form, no `claim` comment. |
 | PR opened linking the issue (`Closes #123`) | Claims it for the PR author if unclaimed, then moves to *In Review* (or *In Progress* while the PR is a draft) and refreshes the TTL. |
 | PR merged | Task → *Completed*. |
 | PR closed without merging | Task → *Claimed* (the claim is kept). |
@@ -241,6 +241,8 @@ All inputs (set on the reusable workflow):
 | `status-in-review` / `status-completed` | `In Review` / `Completed` | lifecycle targets when a PR is ready / merges; skipped if the board lacks the option |
 | `auto-add` | `true` | add newly opened issues to the board as *Unclaimed* |
 | `auto-add-labels` | `` (all) | comma-separated label allowlist for auto-add; if set, only opened issues carrying one of these labels are added (e.g. `intention`) |
+| `claim-on-open` | `false` | auto-claim a newly opened (auto-added) issue for its author, so registering needs only the issue form and no separate `claim` comment |
+| `claim-expiry-field` | `` | issue-form field label to read the auto-claim expiry from (e.g. `Credible expiry date`); empty/missing/unparseable falls back to `default-ttl`. Only used when `claim-on-open` is set |
 | `terminal-statuses` | `In Review,Completed` | states where a `claim` comment is refused |
 | `expiry-field` | `Claim Expires` | Text field holding the ISO 8601 UTC expiry |
 | `note-field` | `Claim Note` | optional Text field holding the freeform claim note; ignored if absent |

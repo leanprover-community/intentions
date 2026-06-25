@@ -24,6 +24,8 @@ export interface Config {
   backfillLegacy: BackfillMode
   autoAdd: boolean
   autoAddLabels: string[]
+  claimOnOpen: boolean
+  claimExpiryField: string
 }
 
 /** True when the project has turned expiry off entirely (default-ttl: none). */
@@ -89,6 +91,8 @@ export function readConfig(): Config {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    claimOnOpen: boolInput('claim-on-open', false),
+    claimExpiryField: core.getInput('claim-expiry-field') || '',
   }
 }
 

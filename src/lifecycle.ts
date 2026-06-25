@@ -1,7 +1,7 @@
 import * as core from '@actions/core'
 import { context, type getOctokit } from '@actions/github'
 import { type Config, expiryEnabled, shouldAutoAdd } from './config.js'
-import { resolveExpiry, toStorage } from './ttl.js'
+import { resolveExpiry, toStorage, formatExpiry } from './ttl.js'
 import {
   type ProjectContext,
   getIssueItem,
@@ -11,6 +11,7 @@ import {
 } from './github/projects.js'
 import { getAssignees, assign, comment, getClosingIssueNumbers, getOpenClosingPullNumbers } from './github/issues.js'
 import { optionId } from './commands/deps.js'
+import { readFormField } from './issueForm.js'
 
 type Octokit = ReturnType<typeof getOctokit>
 
@@ -18,7 +19,8 @@ type Octokit = ReturnType<typeof getOctokit>
  * Board lifecycle automation: keep the board in sync with issue and PR events, so a project
  * gets the full ETP column flow without configuring GitHub's native Project workflows by hand.
  *
- *  - issue opened   -> add to board as Unclaimed (auto-add)
+ *  - issue opened   -> add to board as Unclaimed (auto-add); with claim-on-open, auto-claim it
+ *                       for the issue author, reading the expiry from the issue form
  *  - issue closed   -> Completed
  *  - issue reopened -> Unclaimed (only if it was Completed)
  *  - PR opened/ready -> for each `Closes #N`: claim for the author if Unclaimed, then move to
@@ -31,13 +33,15 @@ type Octokit = ReturnType<typeof getOctokit>
 export async function runLifecycle(octokit: Octokit, repoOctokit: Octokit, cfg: Config, ctx: ProjectContext): Promise<void> {
   const event = context.eventName
   const action = (context.payload.action as string | undefined) ?? ''
-  if (event === 'issues') return runIssueEvent(octokit, cfg, ctx, action)
+  if (event === 'issues') return runIssueEvent(octokit, repoOctokit, cfg, ctx, action)
   if (event === 'pull_request' || event === 'pull_request_target') return runPullEvent(octokit, repoOctokit, cfg, ctx, action)
   core.info(`Lifecycle: no handler for event ${JSON.stringify(event)}; nothing to do.`)
 }
 
-async function runIssueEvent(octokit: Octokit, cfg: Config, ctx: ProjectContext, action: string): Promise<void> {
-  const issue = context.payload.issue as { number?: number; node_id?: string; pull_request?: unknown; labels?: { name?: string }[] } | undefined
+async function runIssueEvent(octokit: Octokit, repoOctokit: Octokit, cfg: Config, ctx: ProjectContext, action: string): Promise<void> {
+  const issue = context.payload.issue as
+    | { number?: number; node_id?: string; pull_request?: unknown; labels?: { name?: string }[]; user?: { login?: string }; body?: string }
+    | undefined
   if (!issue?.number || issue.pull_request) {
     core.info('Not an issue payload (or it is a PR); nothing to do.')
     return
@@ -61,6 +65,9 @@ async function runIssueEvent(octokit: Octokit, cfg: Config, ctx: ProjectContext,
     const unclaimed = optionId(ctx, cfg.statusUnclaimed)
     if (unclaimed) await setStatus(octokit, ctx, itemId, unclaimed)
     core.info(`#${num}: added to board as ${cfg.statusUnclaimed}.`)
+    if (cfg.claimOnOpen) {
+      await autoClaimOnOpen(octokit, repoOctokit, cfg, ctx, owner, repo, num, itemId, issue.user?.login ?? '', issue.body ?? '')
+    }
     return
   }
 
@@ -89,6 +96,69 @@ async function runIssueEvent(octokit: Octokit, cfg: Config, ctx: ProjectContext,
       core.info(`#${num}: reopened -> ${cfg.statusUnclaimed}.`)
     }
   }
+}
+
+/**
+ * Auto-claim a freshly opened issue for its author, so registering takes only the issue form — no
+ * separate `claim` comment. The author opening their own issue is exactly self-service `claim`, so
+ * no authority check is needed. The expiry is read from the issue form (`claim-expiry-field`),
+ * falling back to the project default when the field is absent, blank, or unparseable: auto-claim is
+ * forgiving and never refuses on a bad date, since the registrant can always adjust with `claim`.
+ *
+ * Ordering mirrors `claim`/`assign`: assign first and confirm GitHub kept the author before
+ * touching the board (a rejected assignment leaves the card Unclaimed for a manual claim, never
+ * Claimed-with-nobody), then write the expiry before flipping to Claimed.
+ */
+async function autoClaimOnOpen(
+  octokit: Octokit,
+  repoOctokit: Octokit,
+  cfg: Config,
+  ctx: ProjectContext,
+  owner: string,
+  repo: string,
+  num: number,
+  itemId: string,
+  author: string,
+  body: string,
+): Promise<void> {
+  if (!author) {
+    core.info(`#${num}: claim-on-open is set but the issue has no author login; left ${cfg.statusUnclaimed}.`)
+    return
+  }
+  const claimed = optionId(ctx, cfg.statusClaimed)
+  if (!claimed) {
+    core.warning(`#${num}: no "${cfg.statusClaimed}" status option; cannot auto-claim.`)
+    return
+  }
+
+  await assign(repoOctokit, owner, repo, num, author)
+  const assignees = await getAssignees(repoOctokit, owner, repo, num)
+  if (!assignees.some((a) => a.toLowerCase() === author.toLowerCase())) {
+    core.info(`#${num}: GitHub didn't accept @${author} as an assignee; left ${cfg.statusUnclaimed} for a manual claim.`)
+    return
+  }
+
+  let expiry: Date | null = null
+  if (expiryEnabled(cfg)) {
+    const fromForm = cfg.claimExpiryField ? readFormField(body, cfg.claimExpiryField) : null
+    const now = new Date()
+    let res = resolveExpiry(fromForm ?? '', now, cfg.defaultTtl, cfg.maxTtlMs)
+    if (!res.ok) res = resolveExpiry('', now, cfg.defaultTtl, cfg.maxTtlMs) // bad/oversized form value -> default
+    if (res.ok) {
+      await setExpiry(octokit, ctx, itemId, toStorage(res.expiry))
+      expiry = res.expiry
+    }
+  }
+
+  await setStatus(octokit, ctx, itemId, claimed)
+
+  let first = `@${author} you're now registered as working on this — no extra step needed.`
+  if (expiry) first += ` This registration expires **${formatExpiry(expiry)}**.`
+  const second = expiryEnabled(cfg)
+    ? 'Comment `claim <when>` to change the expiry (e.g. `claim 2 weeks` or `claim 2026-09-01`), `claim` again to renew, or `disclaim` to release it.'
+    : 'Comment `disclaim` to release it once you\'re done.'
+  await comment(repoOctokit, owner, repo, num, `${first}\n\n${second}`)
+  core.info(`#${num}: auto-claimed for @${author}.`)
 }
 
 async function runPullEvent(octokit: Octokit, repoOctokit: Octokit, cfg: Config, ctx: ProjectContext, action: string): Promise<void> {

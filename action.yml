@@ -48,6 +48,14 @@ inputs:
     description: 'Comma-separated label allowlist for auto-add. Empty adds every opened issue; otherwise only issues carrying one of these labels are added (e.g. "intention").'
     required: false
     default: ''
+  claim-on-open:
+    description: 'In lifecycle mode, auto-claim a newly opened (auto-added) issue for its author, so registering needs only the issue form and no separate `claim` comment.'
+    required: false
+    default: 'false'
+  claim-expiry-field:
+    description: 'Issue-form field label to read the auto-claim expiry from (e.g. "Credible expiry date"). Empty, missing, or unparseable falls back to default-ttl. Only used when claim-on-open is true.'
+    required: false
+    default: ''
   terminal-statuses:
     description: 'Comma-separated status names the bot recognizes but does not manage (claims here are refused cleanly).'
     required: false

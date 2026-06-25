@@ -48,6 +48,14 @@ on:
         required: false
         type: string
         default: ''
+      claim-on-open:
+        required: false
+        type: boolean
+        default: false
+      claim-expiry-field:
+        required: false
+        type: string
+        default: ''
       expiry-field:
         required: false
         type: string
@@ -157,6 +165,8 @@ jobs:
           status-completed: ${{ inputs.status-completed }}
           auto-add: ${{ inputs.auto-add }}
           auto-add-labels: ${{ inputs.auto-add-labels }}
+          claim-on-open: ${{ inputs.claim-on-open }}
+          claim-expiry-field: ${{ inputs.claim-expiry-field }}
           expiry-field: ${{ inputs.expiry-field }}
           default-ttl: ${{ inputs.default-ttl }}
           max-ttl: ${{ inputs.max-ttl }}

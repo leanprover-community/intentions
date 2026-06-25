@@ -31902,6 +31902,8 @@ function readConfig() {
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean),
+        claimOnOpen: boolInput('claim-on-open', false),
+        claimExpiryField: core.getInput('claim-expiry-field') || '',
     };
 }
 /** Boolean input with a default when unset (core.getBooleanInput throws on empty). */
@@ -32799,7 +32801,33 @@ async function processCandidate(octokit, repoOctokit, cfg, ctx, c, now, onExpire
     core.info(`#${c.issueNumber}: expired and released.`);
 }
 
+;// CONCATENATED MODULE: ./src/issueForm.ts
+/**
+ * Read a single field out of a GitHub issue-form body.
+ *
+ * GitHub renders an issue form as Markdown: each field becomes a `### <label>` heading followed by
+ * the user's answer, up to the next `### ` heading (or the end of the body). An empty optional field
+ * renders as the literal `_No response_`. This lets the lifecycle pull, say, the expiry a registrant
+ * typed into the form so they don't have to repeat it in a separate `claim` comment.
+ */
+function readFormField(body, label) {
+    if (!body || !label)
+        return null;
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Match the heading line exactly (only trailing spaces/tabs, not following blank lines), then
+    // capture up to the next `### ` heading or the end of the body.
+    const re = new RegExp(`(?:^|\\n)###[ \\t]+${escaped}[ \\t]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n###[ \\t]|$)`);
+    const m = body.match(re);
+    if (!m)
+        return null;
+    const value = m[1].trim();
+    if (value === '' || value === '_No response_')
+        return null;
+    return value;
+}
+
 ;// CONCATENATED MODULE: ./src/lifecycle.ts
+
 
 
 
@@ -32811,7 +32839,8 @@ async function processCandidate(octokit, repoOctokit, cfg, ctx, c, now, onExpire
  * Board lifecycle automation: keep the board in sync with issue and PR events, so a project
  * gets the full ETP column flow without configuring GitHub's native Project workflows by hand.
  *
- *  - issue opened   -> add to board as Unclaimed (auto-add)
+ *  - issue opened   -> add to board as Unclaimed (auto-add); with claim-on-open, auto-claim it
+ *                       for the issue author, reading the expiry from the issue form
  *  - issue closed   -> Completed
  *  - issue reopened -> Unclaimed (only if it was Completed)
  *  - PR opened/ready -> for each `Closes #N`: claim for the author if Unclaimed, then move to
@@ -32825,12 +32854,12 @@ async function runLifecycle(octokit, repoOctokit, cfg, ctx) {
     const event = github.context.eventName;
     const action = github.context.payload.action ?? '';
     if (event === 'issues')
-        return runIssueEvent(octokit, cfg, ctx, action);
+        return runIssueEvent(octokit, repoOctokit, cfg, ctx, action);
     if (event === 'pull_request' || event === 'pull_request_target')
         return runPullEvent(octokit, repoOctokit, cfg, ctx, action);
     core.info(`Lifecycle: no handler for event ${JSON.stringify(event)}; nothing to do.`);
 }
-async function runIssueEvent(octokit, cfg, ctx, action) {
+async function runIssueEvent(octokit, repoOctokit, cfg, ctx, action) {
     const issue = github.context.payload.issue;
     if (!issue?.number || issue.pull_request) {
         core.info('Not an issue payload (or it is a PR); nothing to do.');
@@ -32856,6 +32885,9 @@ async function runIssueEvent(octokit, cfg, ctx, action) {
         if (unclaimed)
             await setStatus(octokit, ctx, itemId, unclaimed);
         core.info(`#${num}: added to board as ${cfg.statusUnclaimed}.`);
+        if (cfg.claimOnOpen) {
+            await autoClaimOnOpen(octokit, repoOctokit, cfg, ctx, owner, repo, num, itemId, issue.user?.login ?? '', issue.body ?? '');
+        }
         return;
     }
     if (action === 'closed') {
@@ -32885,6 +32917,55 @@ async function runIssueEvent(octokit, cfg, ctx, action) {
             core.info(`#${num}: reopened -> ${cfg.statusUnclaimed}.`);
         }
     }
+}
+/**
+ * Auto-claim a freshly opened issue for its author, so registering takes only the issue form — no
+ * separate `claim` comment. The author opening their own issue is exactly self-service `claim`, so
+ * no authority check is needed. The expiry is read from the issue form (`claim-expiry-field`),
+ * falling back to the project default when the field is absent, blank, or unparseable: auto-claim is
+ * forgiving and never refuses on a bad date, since the registrant can always adjust with `claim`.
+ *
+ * Ordering mirrors `claim`/`assign`: assign first and confirm GitHub kept the author before
+ * touching the board (a rejected assignment leaves the card Unclaimed for a manual claim, never
+ * Claimed-with-nobody), then write the expiry before flipping to Claimed.
+ */
+async function autoClaimOnOpen(octokit, repoOctokit, cfg, ctx, owner, repo, num, itemId, author, body) {
+    if (!author) {
+        core.info(`#${num}: claim-on-open is set but the issue has no author login; left ${cfg.statusUnclaimed}.`);
+        return;
+    }
+    const claimed = optionId(ctx, cfg.statusClaimed);
+    if (!claimed) {
+        core.warning(`#${num}: no "${cfg.statusClaimed}" status option; cannot auto-claim.`);
+        return;
+    }
+    await issues_assign(repoOctokit, owner, repo, num, author);
+    const assignees = await getAssignees(repoOctokit, owner, repo, num);
+    if (!assignees.some((a) => a.toLowerCase() === author.toLowerCase())) {
+        core.info(`#${num}: GitHub didn't accept @${author} as an assignee; left ${cfg.statusUnclaimed} for a manual claim.`);
+        return;
+    }
+    let expiry = null;
+    if (expiryEnabled(cfg)) {
+        const fromForm = cfg.claimExpiryField ? readFormField(body, cfg.claimExpiryField) : null;
+        const now = new Date();
+        let res = resolveExpiry(fromForm ?? '', now, cfg.defaultTtl, cfg.maxTtlMs);
+        if (!res.ok)
+            res = resolveExpiry('', now, cfg.defaultTtl, cfg.maxTtlMs); // bad/oversized form value -> default
+        if (res.ok) {
+            await setExpiry(octokit, ctx, itemId, toStorage(res.expiry));
+            expiry = res.expiry;
+        }
+    }
+    await setStatus(octokit, ctx, itemId, claimed);
+    let first = `@${author} you're now registered as working on this — no extra step needed.`;
+    if (expiry)
+        first += ` This registration expires **${formatExpiry(expiry)}**.`;
+    const second = expiryEnabled(cfg)
+        ? 'Comment `claim <when>` to change the expiry (e.g. `claim 2 weeks` or `claim 2026-09-01`), `claim` again to renew, or `disclaim` to release it.'
+        : 'Comment `disclaim` to release it once you\'re done.';
+    await comment(repoOctokit, owner, repo, num, `${first}\n\n${second}`);
+    core.info(`#${num}: auto-claimed for @${author}.`);
 }
 async function runPullEvent(octokit, repoOctokit, cfg, ctx, action) {
     const pr = github.context.payload.pull_request;
