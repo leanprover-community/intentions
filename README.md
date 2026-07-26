@@ -75,6 +75,7 @@ so you don't have to wire up GitHub's native Project automations:
 | Event | Effect |
 |---|---|
 | Issue opened | Added to the board as *Unclaimed* (`auto-add`, on by default). With `claim-on-open`, auto-claimed for the issue author, reading the expiry from the issue form — so registering needs only the form, no `claim` comment. |
+| Issue labeled | Added as *Unclaimed* if the new label satisfies `auto-add-labels` and it is not on the board yet, so a label applied after the issue opened still lands it. Ignored for a closed issue. |
 | PR opened linking the issue (`Closes #123`) | Claims it for the PR author if unclaimed, then moves to *In Review* (or *In Progress* while the PR is a draft) and refreshes the TTL. |
 | PR merged | Task → *Completed*. |
 | PR closed without merging | Task → *Claimed* (the claim is kept). |
@@ -187,7 +188,7 @@ on:
   issue_comment:
     types: [created]
   issues:
-    types: [opened, closed, reopened]
+    types: [opened, labeled, closed, reopened]
   pull_request_target:
     types: [opened, reopened, ready_for_review, converted_to_draft, closed]
   schedule:
@@ -240,7 +241,7 @@ All inputs (set on the reusable workflow):
 | `status-unclaimed` / `status-claimed` / `status-in-progress` | `Unclaimed` / `Claimed` / `In Progress` | option names |
 | `status-in-review` / `status-completed` | `In Review` / `Completed` | lifecycle targets when a PR is ready / merges; skipped if the board lacks the option |
 | `auto-add` | `true` | add newly opened issues to the board as *Unclaimed* |
-| `auto-add-labels` | `` (all) | comma-separated label allowlist for auto-add; if set, only opened issues carrying one of these labels are added (e.g. `intention`) |
+| `auto-add-labels` | `` (all) | comma-separated label allowlist for auto-add; if set, only issues carrying one of these labels are added (e.g. `intention`). Applied on `opened` and on `labeled`, so a label added later still lands the issue |
 | `claim-on-open` | `false` | auto-claim a newly opened (auto-added) issue for its author, so registering needs only the issue form and no separate `claim` comment |
 | `claim-expiry-field` | `` | issue-form field label to read the auto-claim expiry from (e.g. `Credible expiry date`); empty/missing/unparseable falls back to `default-ttl`. Only used when `claim-on-open` is set |
 | `claim-expiry-require-date` | `false` | require `claim-expiry-field` to be an absolute date (e.g. `2026-09-01`); a duration like `6 months` is refused and falls back to `default-ttl`, so the recorded expiry is a date readers see without doing the math. Only used when `claim-on-open` is set |

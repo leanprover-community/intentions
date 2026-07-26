@@ -1,6 +1,6 @@
 import * as core from '@actions/core'
 import { context, type getOctokit } from '@actions/github'
-import { type Config, expiryEnabled, shouldAutoAdd } from './config.js'
+import { type Config, expiryEnabled, shouldEnterBoard } from './config.js'
 import { resolveExpiry, toStorage, formatExpiry } from './ttl.js'
 import {
   type ProjectContext,
@@ -21,6 +21,7 @@ type Octokit = ReturnType<typeof getOctokit>
  *
  *  - issue opened   -> add to board as Unclaimed (auto-add); with claim-on-open, auto-claim it
  *                       for the issue author, reading the expiry from the issue form
+ *  - issue labeled  -> the same, for an issue that only satisfies the auto-add filter now
  *  - issue closed   -> Completed
  *  - issue reopened -> Unclaimed (only if it was Completed)
  *  - PR opened/ready -> for each `Closes #N`: claim for the author if Unclaimed, then move to
@@ -40,7 +41,7 @@ export async function runLifecycle(octokit: Octokit, repoOctokit: Octokit, cfg: 
 
 async function runIssueEvent(octokit: Octokit, repoOctokit: Octokit, cfg: Config, ctx: ProjectContext, action: string): Promise<void> {
   const issue = context.payload.issue as
-    | { number?: number; node_id?: string; pull_request?: unknown; labels?: { name?: string }[]; user?: { login?: string }; body?: string }
+    | { number?: number; node_id?: string; pull_request?: unknown; labels?: { name?: string }[]; user?: { login?: string }; body?: string; state?: string }
     | undefined
   if (!issue?.number || issue.pull_request) {
     core.info('Not an issue payload (or it is a PR); nothing to do.')
@@ -49,16 +50,20 @@ async function runIssueEvent(octokit: Octokit, repoOctokit: Octokit, cfg: Config
   const { owner, repo } = context.repo
   const num = issue.number
 
-  if (action === 'opened') {
+  // Both paths are an issue entering the board for the first time, so they behave identically:
+  // on `labeled` the payload's labels are the post-change set, and the item lookup below keeps
+  // every later label event a no-op.
+  if (action === 'opened' || action === 'labeled') {
     const labels = (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean)
-    if (!shouldAutoAdd(cfg, labels)) {
-      core.info(`#${num}: not auto-added (auto-add filter not satisfied by labels [${labels.join(', ')}]).`)
+    const state = issue.state ?? 'open'
+    if (!shouldEnterBoard(cfg, action, labels, state)) {
+      core.info(`#${num}: not auto-added (${action}, state ${state}, labels [${labels.join(', ')}]).`)
       return
     }
     const existing = await getIssueItem(octokit, owner, repo, num, ctx)
     if (existing) return // already on the board; leave its status alone
     if (!issue.node_id) {
-      core.warning(`#${num}: opened event has no node_id; cannot add to board.`)
+      core.warning(`#${num}: ${action} event has no node_id; cannot add to board.`)
       return
     }
     const itemId = await addIssueToProject(octokit, ctx, issue.node_id)

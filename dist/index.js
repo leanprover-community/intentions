@@ -31870,6 +31870,23 @@ function shouldAutoAdd(cfg, issueLabels) {
     const have = new Set(issueLabels.map((l) => l.toLowerCase()));
     return cfg.autoAddLabels.some((l) => have.has(l.toLowerCase()));
 }
+/**
+ * Should this `issues` event put the issue on the board? `opened` is the ordinary path.
+ *
+ * `labeled` covers the issue that was not eligible when it opened and only became so afterwards.
+ * That happens whenever the auto-add label is applied by something other than the issue's author:
+ * applying a label needs triage rights on the repository, which a first-time contributor does not
+ * have, so projects that hand the labelling to a bot would otherwise never get those issues onto
+ * the board. A label can also land on an issue that is already closed (someone tidying up, a bot
+ * backfilling), and that should not resurrect it, hence the state check.
+ */
+function shouldEnterBoard(cfg, action, issueLabels, issueState) {
+    if (action !== 'opened' && action !== 'labeled')
+        return false;
+    if (action === 'labeled' && issueState !== 'open')
+        return false;
+    return shouldAutoAdd(cfg, issueLabels);
+}
 function parseMode(raw) {
     if (raw === 'command' || raw === 'sweep' || raw === 'lifecycle')
         return raw;
@@ -32855,6 +32872,7 @@ function readFormField(body, label) {
  *
  *  - issue opened   -> add to board as Unclaimed (auto-add); with claim-on-open, auto-claim it
  *                       for the issue author, reading the expiry from the issue form
+ *  - issue labeled  -> the same, for an issue that only satisfies the auto-add filter now
  *  - issue closed   -> Completed
  *  - issue reopened -> Unclaimed (only if it was Completed)
  *  - PR opened/ready -> for each `Closes #N`: claim for the author if Unclaimed, then move to
@@ -32881,17 +32899,21 @@ async function runIssueEvent(octokit, repoOctokit, cfg, ctx, action) {
     }
     const { owner, repo } = github.context.repo;
     const num = issue.number;
-    if (action === 'opened') {
+    // Both paths are an issue entering the board for the first time, so they behave identically:
+    // on `labeled` the payload's labels are the post-change set, and the item lookup below keeps
+    // every later label event a no-op.
+    if (action === 'opened' || action === 'labeled') {
         const labels = (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean);
-        if (!shouldAutoAdd(cfg, labels)) {
-            core.info(`#${num}: not auto-added (auto-add filter not satisfied by labels [${labels.join(', ')}]).`);
+        const state = issue.state ?? 'open';
+        if (!shouldEnterBoard(cfg, action, labels, state)) {
+            core.info(`#${num}: not auto-added (${action}, state ${state}, labels [${labels.join(', ')}]).`);
             return;
         }
         const existing = await getIssueItem(octokit, owner, repo, num, ctx);
         if (existing)
             return; // already on the board; leave its status alone
         if (!issue.node_id) {
-            core.warning(`#${num}: opened event has no node_id; cannot add to board.`);
+            core.warning(`#${num}: ${action} event has no node_id; cannot add to board.`);
             return;
         }
         const itemId = await addIssueToProject(octokit, ctx, issue.node_id);

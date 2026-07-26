@@ -47,6 +47,27 @@ export function shouldAutoAdd(cfg: Config, issueLabels: string[]): boolean {
   return cfg.autoAddLabels.some((l) => have.has(l.toLowerCase()))
 }
 
+/**
+ * Should this `issues` event put the issue on the board? `opened` is the ordinary path.
+ *
+ * `labeled` covers the issue that was not eligible when it opened and only became so afterwards.
+ * That happens whenever the auto-add label is applied by something other than the issue's author:
+ * applying a label needs triage rights on the repository, which a first-time contributor does not
+ * have, so projects that hand the labelling to a bot would otherwise never get those issues onto
+ * the board. A label can also land on an issue that is already closed (someone tidying up, a bot
+ * backfilling), and that should not resurrect it, hence the state check.
+ */
+export function shouldEnterBoard(
+  cfg: Config,
+  action: string,
+  issueLabels: string[],
+  issueState: string,
+): boolean {
+  if (action !== 'opened' && action !== 'labeled') return false
+  if (action === 'labeled' && issueState !== 'open') return false
+  return shouldAutoAdd(cfg, issueLabels)
+}
+
 function parseMode(raw: string): Mode {
   if (raw === 'command' || raw === 'sweep' || raw === 'lifecycle') return raw
   throw new Error(`Invalid mode ${JSON.stringify(raw)}; expected "command", "sweep", or "lifecycle".`)

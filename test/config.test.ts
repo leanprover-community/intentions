@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readConfig, shouldAutoAdd, type Config } from '../src/config.js'
+import { readConfig, shouldAutoAdd, shouldEnterBoard, type Config } from '../src/config.js'
 
 // @actions/core reads inputs from INPUT_<NAME> (spaces -> _, uppercased; hyphens kept).
 function setInputs(inputs: Record<string, string>): void {
@@ -101,4 +101,33 @@ test('repo-token overrides the project token for repo ops when set', () => {
   const cfg = readConfig()
   assert.equal(cfg.token, 't')
   assert.equal(cfg.repoToken, 'gh')
+})
+
+test('shouldEnterBoard: opened and labeled both enter, other actions do not', () => {
+  setInputs({ ...required, 'auto-add-labels': 'intention' })
+  const cfg = readConfig()
+  assert.equal(shouldEnterBoard(cfg, 'opened', ['intention'], 'open'), true)
+  assert.equal(shouldEnterBoard(cfg, 'labeled', ['intention'], 'open'), true)
+  // the auto-add filter still applies on both paths
+  assert.equal(shouldEnterBoard(cfg, 'opened', ['meta'], 'open'), false)
+  assert.equal(shouldEnterBoard(cfg, 'labeled', ['meta'], 'open'), false)
+  // no other issue action puts anything on the board
+  for (const action of ['closed', 'reopened', 'unlabeled', 'edited', 'assigned']) {
+    assert.equal(shouldEnterBoard(cfg, action, ['intention'], 'open'), false)
+  }
+})
+
+test('shouldEnterBoard: a label on a closed issue does not resurrect it', () => {
+  setInputs({ ...required, 'auto-add-labels': 'intention' })
+  const cfg = readConfig()
+  assert.equal(shouldEnterBoard(cfg, 'labeled', ['intention'], 'closed'), false)
+  // `opened` always carries state open; do not let a stale state field suppress it
+  assert.equal(shouldEnterBoard(cfg, 'opened', ['intention'], 'closed'), true)
+})
+
+test('shouldEnterBoard: auto-add false disables both paths', () => {
+  setInputs({ ...required, 'auto-add': 'false' })
+  const cfg = readConfig()
+  assert.equal(shouldEnterBoard(cfg, 'opened', ['intention'], 'open'), false)
+  assert.equal(shouldEnterBoard(cfg, 'labeled', ['intention'], 'open'), false)
 })
