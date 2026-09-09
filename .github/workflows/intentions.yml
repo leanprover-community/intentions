@@ -119,7 +119,7 @@ jobs:
         if: inputs.app-id != ''
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ inputs.app-id }}
+          client-id: ${{ inputs.app-id }}  # accepts the App ID; the app-id input is deprecated
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
       # Pinned to the major tag; this reusable workflow and the action are released together.
@@ -157,7 +157,7 @@ jobs:
         if: inputs.app-id != ''
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ inputs.app-id }}
+          client-id: ${{ inputs.app-id }}  # accepts the App ID; the app-id input is deprecated
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
       - uses: leanprover-community/intentions@v1
@@ -197,7 +197,7 @@ jobs:
         if: inputs.app-id != ''
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ inputs.app-id }}
+          client-id: ${{ inputs.app-id }}  # accepts the App ID; the app-id input is deprecated
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
       - uses: leanprover-community/intentions@v1
