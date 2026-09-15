@@ -10,8 +10,8 @@ import {
   setExpiry,
 } from './github/projects.js'
 import { getAssignees, assign, assignMany, canBeAssigned, comment, getClosingIssueNumbers, getOpenClosingPullNumbers } from './github/issues.js'
-import { optionId } from './commands/deps.js'
-import { readFormField, parseParticipants } from './issueForm.js'
+import { optionId, maintainerCc } from './commands/deps.js'
+import { readFormField, scanParticipants } from './issueForm.js'
 
 type Octokit = ReturnType<typeof getOctokit>
 
@@ -97,8 +97,15 @@ async function runIssueEvent(octokit: Octokit, repoOctokit: Octokit, cfg: Config
     const unclaimed = optionId(ctx, cfg.statusUnclaimed)
     // Only revert a Completed item; never disturb an active claim that was reopened.
     if (completed && unclaimed && item.statusOptionId === completed) {
-      await setStatus(octokit, ctx, item.itemId, unclaimed)
-      core.info(`#${num}: reopened -> ${cfg.statusUnclaimed}.`)
+      // Closing an issue does not unassign anybody, so a reopened item may still have its holders.
+      // Sending it to the unclaimed column whilst they remain produces a card nobody can claim: the
+      // holders are refused because it is not free, everybody else because somebody holds it. Return
+      // a still-held item to the claimed column instead, and only a genuinely empty one to unclaimed.
+      const claimed = optionId(ctx, cfg.statusClaimed)
+      const holders = await getAssignees(repoOctokit, owner, repo, num)
+      const target = holders.length > 0 && claimed ? claimed : unclaimed
+      await setStatus(octokit, ctx, item.itemId, target)
+      core.info(`#${num}: reopened -> ${target === unclaimed ? cfg.statusUnclaimed : cfg.statusClaimed}.`)
     }
   }
 }
@@ -143,7 +150,7 @@ async function autoClaimOnOpen(
     return
   }
 
-  const { added, missing } = await registerParticipants(repoOctokit, cfg, owner, repo, num, author, body)
+  const { added, missing, unreadable } = await registerParticipants(repoOctokit, cfg, owner, repo, num, author, body)
 
   let expiry: Date | null = null
   let expiryNote = ''
@@ -179,13 +186,30 @@ async function autoClaimOnOpen(
   if (missing.length) {
     first += ` I couldn't register ${missing.map((m) => `@${m}`).join(', ')} — GitHub only lets me assign collaborators, org members, or people who have commented on the issue. Anyone listed can comment \`claim\` here to add themselves.`
   }
+  if (unreadable.length) {
+    // A handle must carry a leading @, so that ordinary prose in a free-text field cannot be
+    // mistaken for an assignment. Name each token that was dropped, rather than leaving somebody
+    // unregistered with nothing to explain why.
+    const shown = unreadable.slice(0, 5).map((t) => `\`${t.replace(/`/g, '')}\``).join(', ')
+    const more = unreadable.length > 5 ? `, and ${unreadable.length - 5} more` : ''
+    first += ` I couldn't read ${shown}${more} in the "${cfg.claimParticipantsField}" field as GitHub handles — each one needs its leading \`@\`, as in \`@alice\`. Edit the issue to correct them, and they can then comment \`claim\` to join.`
+  }
   // When the form requires an absolute date, don't advertise a duration example the form would reject.
   const changeHint = cfg.claimExpiryRequireDate ? 'e.g. `claim 2026-09-01`' : 'e.g. `claim 2 weeks` or `claim 2026-09-01`'
   const second = expiryEnabled(cfg)
     ? `Comment \`claim <when>\` to change the expiry (${changeHint}), \`claim\` again to renew, or \`disclaim\` to release it.`
     : 'Comment `disclaim` to release it once you\'re done.'
-  await comment(repoOctokit, owner, repo, num, `${first}\n\n${second}`)
-  core.info(`#${num}: auto-claimed for @${author}${added.length ? ` with participants ${added.join(', ')}` : ''}.`)
+  // Registration is the one moment a registrant is told that something went partly wrong — a
+  // participant who could not be assigned, a name that could not be read, an expiry that could not
+  // be used — and until now that was said to them alone. The registrant may not grasp the
+  // consequence: a credible date quietly replaced by the project default expires their work far
+  // earlier than they asked for. So cc whoever the project has named, but only when there is
+  // something to report, since a clean registration should notify nobody.
+  const shortfall = Boolean(expiryNote) || missing.length > 0 || unreadable.length > 0
+  // The message already opens by @-mentioning the author, so the cc adds only the maintainers.
+  const cc = shortfall ? maintainerCc(cfg) : ''
+  await comment(repoOctokit, owner, repo, num, `${first}\n\n${second}${cc}`)
+  core.info(`#${num}: auto-claimed for @${author}${added.length ? ` with participants ${added.join(', ')}` : ''}${shortfall ? ' (with a shortfall reported)' : ''}.`)
 }
 
 /**
@@ -207,15 +231,16 @@ async function registerParticipants(
   num: number,
   author: string,
   body: string,
-): Promise<{ added: string[]; missing: string[] }> {
-  if (!cfg.claimParticipantsField) return { added: [], missing: [] }
+): Promise<{ added: string[]; missing: string[]; unreadable: string[] }> {
+  if (!cfg.claimParticipantsField) return { added: [], missing: [], unreadable: [] }
   // GitHub caps an issue at ten assignees and the author holds one, so nine is every slot the form
   // can fill. Probing past that is wasted calls on a free-text field a paste can flood; the excess
   // is still named in the confirmation comment rather than dropped silently.
   const maxParticipants = 9
-  const all = parseParticipants(readFormField(body, cfg.claimParticipantsField))
-    .filter((p) => p.toLowerCase() !== author.toLowerCase())
-  if (all.length === 0) return { added: [], missing: [] }
+  const scan = scanParticipants(readFormField(body, cfg.claimParticipantsField))
+  const unreadable = scan.unreadable
+  const all = scan.logins.filter((p) => p.toLowerCase() !== author.toLowerCase())
+  if (all.length === 0) return { added: [], missing: [], unreadable }
   const listed = all.slice(0, maxParticipants)
   const overflow = all.slice(maxParticipants)
   if (overflow.length) core.info(`#${num}: ${all.length} participants listed; probing the first ${maxParticipants}.`)
@@ -231,10 +256,10 @@ async function registerParticipants(
     const after = new Set((await getAssignees(repoOctokit, owner, repo, num)).map((a) => a.toLowerCase()))
     const added = assignable.filter((p) => after.has(p.toLowerCase()))
     const dropped = assignable.filter((p) => !after.has(p.toLowerCase()))
-    return { added, missing: [...rejected, ...dropped, ...overflow] }
+    return { added, missing: [...rejected, ...dropped, ...overflow], unreadable }
   } catch (err) {
     core.warning(`#${num}: could not register participants (${(err as Error).message}); continuing with the author alone.`)
-    return { added: [], missing: all }
+    return { added: [], missing: all, unreadable }
   }
 }
 

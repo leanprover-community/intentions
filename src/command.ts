@@ -19,12 +19,23 @@ export type Command =
   | { kind: 'disclaim' }
   | { kind: 'propose'; pr: number }
   | { kind: 'withdraw'; pr: number }
+  | { kind: 'status'; target: StatusTarget }
+
+/** Which board column a `progress` / `review` / `done` comment asks for. */
+export type StatusTarget = 'in-progress' | 'in-review' | 'completed'
 
 export function parseCommand(body: string): Command | null {
   const normalized = body.replace(/\s+/g, ' ').trim().toLowerCase()
 
   // Check disclaim before claim ("disclaim" contains "claim", but is anchored separately).
   if (normalized === 'disclaim') return { kind: 'disclaim' }
+
+  // Status commands: a holder moves their own card between columns without a pull request, for
+  // registries whose work lives in other repositories. Whole-comment matches only, so prose such
+  // as "this is in progress" cannot trigger them.
+  if (/^(?:progress|in progress|start|started)$/.test(normalized)) return { kind: 'status', target: 'in-progress' }
+  if (/^(?:review|in review|ready)$/.test(normalized)) return { kind: 'status', target: 'in-review' }
+  if (/^(?:done|complete|completed|finished)$/.test(normalized)) return { kind: 'status', target: 'completed' }
 
   const propose = normalized.match(/^propose\s*(?:pr\s*)?#(\d+)$/)
   if (propose) return { kind: 'propose', pr: Number(propose[1]) }

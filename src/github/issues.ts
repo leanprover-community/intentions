@@ -8,8 +8,24 @@ export async function getAssignees(octokit: Octokit, owner: string, repo: string
 }
 
 export async function getIssueBody(octokit: Octokit, owner: string, repo: string, issue_number: number): Promise<string> {
+  return (await getIssue(octokit, owner, repo, issue_number)).body
+}
+
+export interface IssueFacts {
+  body: string
+  /** login of whoever opened the issue ('' if the API omits it, e.g. a deleted account) */
+  author: string
+  state: 'open' | 'closed'
+}
+
+/** Body, author and open/closed state in a single request (entitlement needs all three). */
+export async function getIssue(octokit: Octokit, owner: string, repo: string, issue_number: number): Promise<IssueFacts> {
   const res = await octokit.rest.issues.get({ owner, repo, issue_number })
-  return res.data.body ?? ''
+  return {
+    body: res.data.body ?? '',
+    author: res.data.user?.login ?? '',
+    state: res.data.state === 'closed' ? 'closed' : 'open',
+  }
 }
 
 /**
@@ -99,6 +115,20 @@ export async function assignMany(octokit: Octokit, owner: string, repo: string, 
 
 export async function unassign(octokit: Octokit, owner: string, repo: string, issue_number: number, login: string): Promise<void> {
   await octokit.rest.issues.removeAssignees({ owner, repo, issue_number, assignees: [login] })
+}
+
+/**
+ * Has any comment on this issue carried `marker` already?
+ *
+ * State kept in the thread rather than on the board, in the manner of the `Closes #N` linker: a
+ * warning about something only a human can fix — a mistyped handle, say — does not become false by
+ * being reported, so without a record of having said it the bot would repeat itself on every sweep.
+ * The marker embeds what was reported, so a warning is repeated when, and only when, the underlying
+ * problem changes.
+ */
+export async function issueHasMarker(octokit: Octokit, owner: string, repo: string, issue_number: number, marker: string): Promise<boolean> {
+  const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 })
+  return comments.some((c) => (c.body ?? '').includes(marker))
 }
 
 export async function comment(octokit: Octokit, owner: string, repo: string, issue_number: number, body: string): Promise<void> {

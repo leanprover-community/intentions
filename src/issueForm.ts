@@ -30,18 +30,48 @@ export function readFormField(body: string, label: string): string | null {
  * hyphen) are dropped rather than reported. Duplicates collapse case-insensitively to the first
  * spelling. A null/blank value yields [].
  */
-export function parseParticipants(value: string | null): string[] {
-  if (!value) return []
+export interface ParticipantScan {
+  /** the handles that were recognised, in order, deduplicated case-insensitively */
+  logins: string[]
+  /** tokens that were not recognisable as handles — almost always a missing leading `@` */
+  unreadable: string[]
+}
+
+/**
+ * Split a participants field into the handles it names and the tokens it does not.
+ *
+ * The leading `@` is required, so that ordinary prose in a free-text field cannot be mistaken for
+ * an assignment. That makes a missing `@` the overwhelmingly common mistake, and silently dropping
+ * it leaves somebody unregistered with nothing to explain why — so the rejects are returned rather
+ * than discarded, for the caller to report back.
+ */
+export function scanParticipants(value: string | null): ParticipantScan {
   const logins: string[] = []
+  const unreadable: string[] = []
+  if (!value) return { logins, unreadable }
   const seen = new Set<string>()
+  const seenBad = new Set<string>()
   for (const token of value.split(/[\s,;]+/)) {
+    if (!token) continue
     const m = token.match(/^@([A-Za-z0-9](?:-?[A-Za-z0-9]){0,38})$/)
-    if (!m) continue
+    if (!m) {
+      const key = token.toLowerCase()
+      if (!seenBad.has(key)) {
+        seenBad.add(key)
+        unreadable.push(token)
+      }
+      continue
+    }
     const login = m[1]!
     const key = login.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
     logins.push(login)
   }
-  return logins
+  return { logins, unreadable }
+}
+
+/** The handles named in a participants field; see {@link scanParticipants} for the rejects. */
+export function parseParticipants(value: string | null): string[] {
+  return scanParticipants(value).logins
 }

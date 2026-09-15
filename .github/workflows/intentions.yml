@@ -40,6 +40,22 @@ on:
         required: false
         type: string
         default: In Review,Completed
+      participant-claim:
+        required: false
+        type: boolean
+        default: false
+      enforce-holder:
+        required: false
+        type: boolean
+        default: false
+      status-commands:
+        required: false
+        type: boolean
+        default: false
+      notify-maintainers:
+        required: false
+        type: string
+        default: ''
       auto-add:
         required: false
         type: boolean
@@ -133,8 +149,13 @@ jobs:
           status-unclaimed: ${{ inputs.status-unclaimed }}
           status-claimed: ${{ inputs.status-claimed }}
           status-in-progress: ${{ inputs.status-in-progress }}
+          status-in-review: ${{ inputs.status-in-review }}
+          status-completed: ${{ inputs.status-completed }}
           terminal-statuses: ${{ inputs.terminal-statuses }}
           claim-participants-field: ${{ inputs.claim-participants-field }}
+          participant-claim: ${{ inputs.participant-claim }}
+          status-commands: ${{ inputs.status-commands }}
+          notify-maintainers: ${{ inputs.notify-maintainers }}
           expiry-field: ${{ inputs.expiry-field }}
           default-ttl: ${{ inputs.default-ttl }}
           max-ttl: ${{ inputs.max-ttl }}
@@ -178,6 +199,7 @@ jobs:
           claim-expiry-field: ${{ inputs.claim-expiry-field }}
           claim-expiry-require-date: ${{ inputs.claim-expiry-require-date }}
           claim-participants-field: ${{ inputs.claim-participants-field }}
+          notify-maintainers: ${{ inputs.notify-maintainers }}
           expiry-field: ${{ inputs.expiry-field }}
           default-ttl: ${{ inputs.default-ttl }}
           max-ttl: ${{ inputs.max-ttl }}
@@ -210,6 +232,10 @@ jobs:
           status-unclaimed: ${{ inputs.status-unclaimed }}
           status-claimed: ${{ inputs.status-claimed }}
           status-in-progress: ${{ inputs.status-in-progress }}
+          status-in-review: ${{ inputs.status-in-review }}
+          claim-participants-field: ${{ inputs.claim-participants-field }}
+          enforce-holder: ${{ inputs.enforce-holder }}
+          notify-maintainers: ${{ inputs.notify-maintainers }}
           expiry-field: ${{ inputs.expiry-field }}
           default-ttl: ${{ inputs.default-ttl }}
           expire-in-progress: ${{ inputs.expire-in-progress }}

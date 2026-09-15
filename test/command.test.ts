@@ -95,3 +95,22 @@ test('prose containing keywords does not trigger', () => {
   assert.equal(parseCommand('propose 12'), null) // missing #
   assert.equal(parseCommand('thanks!'), null)
 })
+
+// ---- status commands ---------------------------------------------------------------------
+
+test('status commands parse their accepted spellings', () => {
+  for (const s of ['progress', 'in progress', 'START', ' started ']) {
+    assert.deepEqual(parseCommand(s), { kind: 'status', target: 'in-progress' })
+  }
+  for (const s of ['review', 'in review', 'Ready']) {
+    assert.deepEqual(parseCommand(s), { kind: 'status', target: 'in-review' })
+  }
+  for (const s of ['done', 'complete', 'completed', 'FINISHED']) {
+    assert.deepEqual(parseCommand(s), { kind: 'status', target: 'completed' })
+  }
+})
+
+test('prose containing a status word is not a status command', () => {
+  assert.equal(parseCommand('this is done now'), null)
+  assert.equal(parseCommand('I made progress today'), null)
+})

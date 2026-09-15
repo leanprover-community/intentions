@@ -9,6 +9,7 @@ import { handleAssign } from './commands/assign.js'
 import { handleDisclaim } from './commands/disclaim.js'
 import { handlePropose } from './commands/propose.js'
 import { handleWithdraw } from './commands/withdraw.js'
+import { handleStatus } from './commands/status.js'
 import { runSweep } from './sweep.js'
 import { runLifecycle } from './lifecycle.js'
 
@@ -96,6 +97,15 @@ async function main(): Promise<void> {
       break
     case 'withdraw':
       await handleWithdraw(deps, command.pr)
+      break
+    case 'status':
+      // Off by default: a project that has not enabled them should not have ordinary words like
+      // "done" quietly moving its board.
+      if (!cfg.statusCommands) {
+        core.info(`Status commands are disabled (status-commands: false); ignoring "${command.target}".`)
+        break
+      }
+      await handleStatus(deps, command.target)
       break
   }
 }

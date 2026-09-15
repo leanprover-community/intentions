@@ -251,15 +251,26 @@ export interface ClaimedItem {
   issueOwner: string
   issueRepo: string
   assignees: string[]
+  /** login of whoever opened the issue; the fallback holder when enforce-holder is on */
+  author: string
+  /** the issue body, so a reconciling pass can read its form fields without a request per card */
+  body: string
   statusOptionId: string | null
   expiryText: string | null
 }
 
-/** Enumerate all board items whose status is one of `statusOptionIds` (for the sweep). */
+/**
+ * Enumerate board items whose status is one of `statusOptionIds` (for the sweep).
+ *
+ * With `includeStatusless`, items carrying no status at all are returned too. Those are invisible
+ * on a board grouped by status, so the holder reconciliation needs them explicitly; ordinary sweep
+ * callers leave the option off and never see them.
+ */
 export async function listItemsByStatus(
   octokit: Octokit,
   ctx: ProjectContext,
   statusOptionIds: Set<string>,
+  opts: { includeStatusless?: boolean } = {},
 ): Promise<ClaimedItem[]> {
   const out: ClaimedItem[] = []
   let cursor: string | null = null
@@ -267,7 +278,7 @@ export async function listItemsByStatus(
     const res: {
       node: { items: { nodes: {
         id: string
-        content: { __typename: string; number?: number; assignees?: { nodes: { login: string }[] }; repository?: { name: string; owner: { login: string } } } | null
+        content: { __typename: string; number?: number; body?: string; author?: { login: string } | null; assignees?: { nodes: { login: string }[] }; repository?: { name: string; owner: { login: string } } } | null
         fieldValues: { nodes: FieldValue[]; pageInfo: { hasNextPage: boolean } }
       }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } }
     } = await octokit.graphql(
@@ -278,7 +289,7 @@ export async function listItemsByStatus(
               id
               content{
                 __typename
-                ... on Issue { number assignees(first:20){ nodes{ login } } repository{ name owner{ login } } }
+                ... on Issue { number body author{ login } assignees(first:20){ nodes{ login } } repository{ name owner{ login } } }
               }
               ${ITEM_FIELD_VALUES}
             }
@@ -295,13 +306,17 @@ export async function listItemsByStatus(
         throw new Error(`Item ${it.id} has more than 50 field values; refusing to act on a partial read.`)
       }
       const state = readItemState(it.id, it.fieldValues.nodes, ctx.statusFieldId, ctx.expiryFieldId)
-      if (!state.statusOptionId || !statusOptionIds.has(state.statusOptionId)) continue
+      if (state.statusOptionId === null) {
+        if (!opts.includeStatusless) continue
+      } else if (!statusOptionIds.has(state.statusOptionId)) continue
       out.push({
         itemId: it.id,
         issueNumber: it.content.number,
         issueOwner: it.content.repository?.owner.login ?? '',
         issueRepo: it.content.repository?.name ?? '',
         assignees: (it.content.assignees?.nodes ?? []).map((a) => a.login),
+        author: it.content.author?.login ?? '',
+        body: it.content.body ?? '',
         statusOptionId: state.statusOptionId,
         expiryText: state.expiryText,
       })

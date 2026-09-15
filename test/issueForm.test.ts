@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFormField, parseParticipants } from '../src/issueForm.js'
+import { readFormField, parseParticipants, scanParticipants } from '../src/issueForm.js'
 
 const body = [
   '### What are you working on?',
@@ -85,4 +85,27 @@ test('caps login length at 39 characters', () => {
   const long = 'a'.repeat(40)
   const ok = 'a'.repeat(39)
   assert.deepEqual(parseParticipants(`@${long} @${ok}`), [ok])
+})
+
+// ---- scanParticipants: what was dropped, and why -----------------------------------------
+
+test('scan returns the handles it read and the tokens it could not', () => {
+  const scan = scanParticipants('@alice, bob, @carol-dee')
+  assert.deepEqual(scan.logins, ['alice', 'carol-dee'])
+  assert.deepEqual(scan.unreadable, ['bob'])
+})
+
+test('scan reports every stray token, deduplicated case-insensitively', () => {
+  const scan = scanParticipants('alice and Alice and @bob')
+  assert.deepEqual(scan.logins, ['bob'])
+  assert.deepEqual(scan.unreadable, ['alice', 'and'])
+})
+
+test('scan of a blank or absent field reports nothing at all', () => {
+  assert.deepEqual(scanParticipants(null), { logins: [], unreadable: [] })
+  assert.deepEqual(scanParticipants('   '), { logins: [], unreadable: [] })
+})
+
+test('parseParticipants still returns just the handles', () => {
+  assert.deepEqual(parseParticipants('@alice, bob'), ['alice'])
 })

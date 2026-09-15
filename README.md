@@ -23,6 +23,7 @@ Comment on an issue that's on the project board:
 | `intention` + following lines | Attach a freeform note (see below). |
 | `assign @bob` · `assign @bob 2w` | Register **someone else** on the task (see below). |
 | `disclaim` | Release a task you hold. |
+| `progress` · `review` · `done` | Move your own card between columns, no PR needed (`status-commands`). |
 | `propose PR #123` | Link your PR; move the task to *In Progress* (refreshes the TTL). |
 | `withdraw PR #123` | Move back to *Claimed* (you keep the claim). |
 
@@ -65,6 +66,55 @@ Co-holders are full holders: any of them can renew with `claim <when>`, link PRs
 with `disclaim`. A disclaim on a co-held task removes only the commenter — the task stays
 registered to the others, with its expiry and note intact — and only the last holder leaving (or
 the sweep expiring the whole registration) releases it back to *Unclaimed*.
+
+### Registry mode: entitlement, status commands, and a well-formed board
+
+A registry board — one whose entries describe work carried out in *other* repositories — needs three
+things a task queue does not. All three are off by default, so nothing changes for existing projects.
+
+`participant-claim` lets the **issue author, and anybody listed in the participants field, `claim`
+from any column**, rather than only from an unclaimed one. On a registry it is wrong to tell somebody
+that their own intention is unavailable, and it is the self-service repair for a card left in an odd
+state by a manual board edit. Everybody else stays bound by the ordinary rules, so a genuinely free
+card can still be picked up by a newcomer. A claim never drags a card backwards out of *In Progress*
+or *In Review*, and a closed issue is refused rather than silently reactivated.
+
+`status-commands` enables `progress`, `review` and `done`, with which a holder moves their own card
+between columns. Without them the only routes into *In Progress* and *In Review* are `propose PR #N`
+and the automatic `Closes #N` linkage, both of which recognise only pull requests targeting this same
+repository — so on a registry those columns are unreachable and a maintainer must move every card by
+hand. Only somebody registered on the task may use them, plus the entitled author and participants.
+
+`enforce-holder` has the sweep keep the board well-formed, repairing the two malformed shapes that
+board edits made by hand produce, and which no webhook a repository workflow can subscribe to would
+report:
+
+| Shape found | Repair |
+|---|---|
+| A card with no status at all | Placed in the claimed column if somebody is assigned, otherwise in the unclaimed one. |
+| A card in an active column with no assignee | The issue author is assigned. |
+
+The same pass audits every card's participants field, in every column, and reports any name it
+cannot read as a handle — the leading `@` being required. That fault is not one the bot can repair,
+only a human can, so the warning carries a hidden marker listing exactly what was unreadable: it is
+repeated when, and only when, that set changes, and never merely because the fault persists. The
+issue's author is cc'd, since it is their field to correct.
+
+Every repair is announced in a comment on the issue concerned, so the registrant sees why the bot
+touched their card, and `notify-maintainers` adds a cc line naming whoever should know that a
+malformed card existed at all. The same line is appended to **every message that declines a
+`claim`** — a task already held, a terminal column, a closed issue, an expiry that could not be
+read, an assignment GitHub rejected — and always names the issue's author as well, so that somebody
+who can act on it hears about every attempt that failed, not merely the anomalous ones. Only successful repairs are announced, and each repair makes its own
+precondition false, so a card is announced once and never again; a repair that fails is logged as a
+warning instead of commenting on every sweep.
+
+Both matter because `claim` otherwise refuses them: a statusless card as "not Unclaimed", and an
+unheld active card as "held by someone" — naming a holder who does not exist. The author is a
+**fallback only**, applied when the assignee list is empty, so an explicit choice by the bot or by a
+maintainer is never overwritten; terminal columns are left alone, since finished work needs no
+holder. The reconciliation runs at the start of each sweep, before and independently of expiry, so it
+keeps working on a project that has switched expiry off entirely.
 
 ### Claim notes
 
@@ -262,6 +312,10 @@ All inputs (set on the reusable workflow):
 | `claim-expiry-field` | `` | issue-form field label to read the auto-claim expiry from (e.g. `Credible expiry date`); empty/missing/unparseable falls back to `default-ttl`. Only used when `claim-on-open` is set |
 | `claim-expiry-require-date` | `false` | require `claim-expiry-field` to be an absolute date (e.g. `2026-09-01`); a duration like `6 months` is refused and falls back to `default-ttl`, so the recorded expiry is a date readers see without doing the math. Only used when `claim-on-open` is set |
 | `claim-participants-field` | `` | issue-form field label listing co-participants' GitHub handles (e.g. `Participants`). On open (with `claim-on-open`), everyone listed that GitHub accepts is registered alongside the author; anyone listed may later comment `claim` to join the registration as a co-holder. See [Group registrations](#group-registrations-participants) |
+| `participant-claim` | `false` | let the issue author and listed participants `claim` from any column, not only a free one. See [Registry mode](#registry-mode-entitlement-status-commands-and-a-well-formed-board) |
+| `status-commands` | `false` | enable the `progress` / `review` / `done` comment commands for holders |
+| `enforce-holder` | `false` | have the sweep give every card a column and assign the issue author to any active card with no holder |
+| `notify-maintainers` | `` | comma-separated logins to cc, alongside the issue's author, whenever a `claim` is declined, on every board repair or participants warning, and on a registration whose participants or expiry could not be used in full |
 | `terminal-statuses` | `In Review,Completed` | states where a `claim` comment is refused |
 | `expiry-field` | `Claim Expires` | Text field holding the ISO 8601 UTC expiry |
 | `note-field` | `Claim Note` | optional Text field holding the freeform claim note; ignored if absent |

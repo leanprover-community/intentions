@@ -31934,6 +31934,13 @@ function readConfig() {
         claimExpiryField: core.getInput('claim-expiry-field') || '',
         claimExpiryRequireDate: boolInput('claim-expiry-require-date', false),
         claimParticipantsField: core.getInput('claim-participants-field') || '',
+        participantClaim: boolInput('participant-claim', false),
+        enforceHolder: boolInput('enforce-holder', false),
+        notifyMaintainers: (core.getInput('notify-maintainers') || '')
+            .split(',')
+            .map((s) => s.trim().replace(/^@/, ''))
+            .filter(Boolean),
+        statusCommands: boolInput('status-commands', false),
     };
 }
 /** Boolean input with a default when unset (core.getBooleanInput throws on empty). */
@@ -31964,6 +31971,15 @@ function parseCommand(body) {
     // Check disclaim before claim ("disclaim" contains "claim", but is anchored separately).
     if (normalized === 'disclaim')
         return { kind: 'disclaim' };
+    // Status commands: a holder moves their own card between columns without a pull request, for
+    // registries whose work lives in other repositories. Whole-comment matches only, so prose such
+    // as "this is in progress" cannot trigger them.
+    if (/^(?:progress|in progress|start|started)$/.test(normalized))
+        return { kind: 'status', target: 'in-progress' };
+    if (/^(?:review|in review|ready)$/.test(normalized))
+        return { kind: 'status', target: 'in-review' };
+    if (/^(?:done|complete|completed|finished)$/.test(normalized))
+        return { kind: 'status', target: 'completed' };
     const propose = normalized.match(/^propose\s*(?:pr\s*)?#(\d+)$/);
     if (propose)
         return { kind: 'propose', pr: Number(propose[1]) };
@@ -32143,8 +32159,14 @@ async function getIssueItem(octokit, owner, repo, issueNumber, ctx) {
     } while (cursor);
     return null;
 }
-/** Enumerate all board items whose status is one of `statusOptionIds` (for the sweep). */
-async function listItemsByStatus(octokit, ctx, statusOptionIds) {
+/**
+ * Enumerate board items whose status is one of `statusOptionIds` (for the sweep).
+ *
+ * With `includeStatusless`, items carrying no status at all are returned too. Those are invisible
+ * on a board grouped by status, so the holder reconciliation needs them explicitly; ordinary sweep
+ * callers leave the option off and never see them.
+ */
+async function listItemsByStatus(octokit, ctx, statusOptionIds, opts = {}) {
     const out = [];
     let cursor = null;
     do {
@@ -32155,7 +32177,7 @@ async function listItemsByStatus(octokit, ctx, statusOptionIds) {
               id
               content{
                 __typename
-                ... on Issue { number assignees(first:20){ nodes{ login } } repository{ name owner{ login } } }
+                ... on Issue { number body author{ login } assignees(first:20){ nodes{ login } } repository{ name owner{ login } } }
               }
               ${ITEM_FIELD_VALUES}
             }
@@ -32171,7 +32193,11 @@ async function listItemsByStatus(octokit, ctx, statusOptionIds) {
                 throw new Error(`Item ${it.id} has more than 50 field values; refusing to act on a partial read.`);
             }
             const state = readItemState(it.id, it.fieldValues.nodes, ctx.statusFieldId, ctx.expiryFieldId);
-            if (!state.statusOptionId || !statusOptionIds.has(state.statusOptionId))
+            if (state.statusOptionId === null) {
+                if (!opts.includeStatusless)
+                    continue;
+            }
+            else if (!statusOptionIds.has(state.statusOptionId))
                 continue;
             out.push({
                 itemId: it.id,
@@ -32179,6 +32205,8 @@ async function listItemsByStatus(octokit, ctx, statusOptionIds) {
                 issueOwner: it.content.repository?.owner.login ?? '',
                 issueRepo: it.content.repository?.name ?? '',
                 assignees: (it.content.assignees?.nodes ?? []).map((a) => a.login),
+                author: it.content.author?.login ?? '',
+                body: it.content.body ?? '',
                 statusOptionId: state.statusOptionId,
                 expiryText: state.expiryText,
             });
@@ -32237,8 +32265,16 @@ async function getAssignees(octokit, owner, repo, issue_number) {
     return (res.data.assignees ?? []).map((a) => a.login);
 }
 async function getIssueBody(octokit, owner, repo, issue_number) {
+    return (await getIssue(octokit, owner, repo, issue_number)).body;
+}
+/** Body, author and open/closed state in a single request (entitlement needs all three). */
+async function getIssue(octokit, owner, repo, issue_number) {
     const res = await octokit.rest.issues.get({ owner, repo, issue_number });
-    return res.data.body ?? '';
+    return {
+        body: res.data.body ?? '',
+        author: res.data.user?.login ?? '',
+        state: res.data.state === 'closed' ? 'closed' : 'open',
+    };
 }
 /**
  * The issues a PR closes via GitHub's parsed linkage (`Closes #N` / `Fixes #N` and the
@@ -32315,6 +32351,19 @@ async function assignMany(octokit, owner, repo, issue_number, logins) {
 async function unassign(octokit, owner, repo, issue_number, login) {
     await octokit.rest.issues.removeAssignees({ owner, repo, issue_number, assignees: [login] });
 }
+/**
+ * Has any comment on this issue carried `marker` already?
+ *
+ * State kept in the thread rather than on the board, in the manner of the `Closes #N` linker: a
+ * warning about something only a human can fix — a mistyped handle, say — does not become false by
+ * being reported, so without a record of having said it the bot would repeat itself on every sweep.
+ * The marker embeds what was reported, so a warning is repeated when, and only when, the underlying
+ * problem changes.
+ */
+async function issueHasMarker(octokit, owner, repo, issue_number, marker) {
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+    return comments.some((c) => (c.body ?? '').includes(marker));
+}
 async function comment(octokit, owner, repo, issue_number, body) {
     await octokit.rest.issues.createComment({ owner, repo, issue_number, body });
 }
@@ -32356,7 +32405,113 @@ async function unlinkPullFromIssue(octokit, owner, repo, pull_number, issueNumbe
     await octokit.rest.pulls.update({ owner, repo, pull_number, body: next });
 }
 
+;// CONCATENATED MODULE: ./src/issueForm.ts
+/**
+ * Read a single field out of a GitHub issue-form body.
+ *
+ * GitHub renders an issue form as Markdown: each field becomes a `### <label>` heading followed by
+ * the user's answer, up to the next `### ` heading (or the end of the body). An empty optional field
+ * renders as the literal `_No response_`. This lets the lifecycle pull, say, the expiry a registrant
+ * typed into the form so they don't have to repeat it in a separate `claim` comment.
+ */
+function readFormField(body, label) {
+    if (!body || !label)
+        return null;
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Match the heading line exactly (only trailing spaces/tabs, not following blank lines), then
+    // capture up to the next `### ` heading or the end of the body.
+    const re = new RegExp(`(?:^|\\n)###[ \\t]+${escaped}[ \\t]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n###[ \\t]|$)`);
+    const m = body.match(re);
+    if (!m)
+        return null;
+    const value = m[1].trim();
+    if (value === '' || value === '_No response_')
+        return null;
+    return value;
+}
+/**
+ * Split a participants field into the handles it names and the tokens it does not.
+ *
+ * The leading `@` is required, so that ordinary prose in a free-text field cannot be mistaken for
+ * an assignment. That makes a missing `@` the overwhelmingly common mistake, and silently dropping
+ * it leaves somebody unregistered with nothing to explain why — so the rejects are returned rather
+ * than discarded, for the caller to report back.
+ */
+function scanParticipants(value) {
+    const logins = [];
+    const unreadable = [];
+    if (!value)
+        return { logins, unreadable };
+    const seen = new Set();
+    const seenBad = new Set();
+    for (const token of value.split(/[\s,;]+/)) {
+        if (!token)
+            continue;
+        const m = token.match(/^@([A-Za-z0-9](?:-?[A-Za-z0-9]){0,38})$/);
+        if (!m) {
+            const key = token.toLowerCase();
+            if (!seenBad.has(key)) {
+                seenBad.add(key);
+                unreadable.push(token);
+            }
+            continue;
+        }
+        const login = m[1];
+        const key = login.toLowerCase();
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        logins.push(login);
+    }
+    return { logins, unreadable };
+}
+/** The handles named in a participants field; see {@link scanParticipants} for the rejects. */
+function parseParticipants(value) {
+    return scanParticipants(value).logins;
+}
+
+;// CONCATENATED MODULE: ./src/entitlement.ts
+
+/**
+ * Who may act on a registration irrespective of the column it sits in.
+ *
+ * A registry board is not a work queue: the person who registered an intention, and the people
+ * they named as working on it with them, are its natural custodians, and the bot should never tell
+ * them their own project is unavailable. Everyone else remains bound by the ordinary status rules,
+ * so a genuinely free card can still be picked up by a newcomer.
+ *
+ * Entitlement is read from the issue at the moment of the comment, never cached: an author may add
+ * a collaborator at any time by editing the body, and the change takes effect immediately.
+ */
+function isEntitled(actor, issueAuthor, issueBody, participantsField) {
+    const a = actor.toLowerCase();
+    if (issueAuthor && a === issueAuthor.toLowerCase())
+        return true;
+    if (!participantsField)
+        return false;
+    return parseParticipants(readFormField(issueBody, participantsField))
+        .some((p) => p.toLowerCase() === a);
+}
+
 ;// CONCATENATED MODULE: ./src/commands/deps.ts
+/**
+ * The trailing "cc" line for a message that somebody responsible ought to see: a card the bot
+ * cannot act on, or a registration that will not work until a human edits it. Empty when the
+ * project has named nobody, so the message still stands on its own.
+ */
+function maintainerCc(cfg, alsoMention = []) {
+    const seen = new Set();
+    const who = [...alsoMention, ...cfg.notifyMaintainers]
+        .map((m) => m.replace(/^@/, ''))
+        .filter((m) => {
+        const k = m.toLowerCase();
+        if (!m || seen.has(k))
+            return false;
+        seen.add(k);
+        return true;
+    });
+    return who.length ? `\n\ncc ${who.map((m) => `@${m}`).join(' ')}` : '';
+}
 function optionId(ctx, name) {
     return ctx.statusOptionIdByName.get(name.toLowerCase()) ?? null;
 }
@@ -32405,61 +32560,8 @@ async function writeNote(deps, itemId, note, clearIfEmpty = false) {
     await setNote(octokit, ctx, itemId, text);
 }
 
-;// CONCATENATED MODULE: ./src/issueForm.ts
-/**
- * Read a single field out of a GitHub issue-form body.
- *
- * GitHub renders an issue form as Markdown: each field becomes a `### <label>` heading followed by
- * the user's answer, up to the next `### ` heading (or the end of the body). An empty optional field
- * renders as the literal `_No response_`. This lets the lifecycle pull, say, the expiry a registrant
- * typed into the form so they don't have to repeat it in a separate `claim` comment.
- */
-function readFormField(body, label) {
-    if (!body || !label)
-        return null;
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Match the heading line exactly (only trailing spaces/tabs, not following blank lines), then
-    // capture up to the next `### ` heading or the end of the body.
-    const re = new RegExp(`(?:^|\\n)###[ \\t]+${escaped}[ \\t]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n###[ \\t]|$)`);
-    const m = body.match(re);
-    if (!m)
-        return null;
-    const value = m[1].trim();
-    if (value === '' || value === '_No response_')
-        return null;
-    return value;
-}
-/**
- * Parse a list of GitHub handles out of a form-field value like `@alice, @bob`.
- *
- * A handle must carry its `@`; handles may be separated by commas, semicolons, or any whitespace.
- * The field is free text on a public form, so a bare word is never read as a handle: someone who
- * types "Alice Smith and Bob Jones" means four names, and reading those as `@Alice`, `@Smith`,
- * `@and`, `@Bob`, `@Jones` would notify (and possibly assign) unrelated accounts. Tokens that
- * aren't a well-formed GitHub login (1–39 alphanumerics/hyphens, no leading/trailing/double
- * hyphen) are dropped rather than reported. Duplicates collapse case-insensitively to the first
- * spelling. A null/blank value yields [].
- */
-function parseParticipants(value) {
-    if (!value)
-        return [];
-    const logins = [];
-    const seen = new Set();
-    for (const token of value.split(/[\s,;]+/)) {
-        const m = token.match(/^@([A-Za-z0-9](?:-?[A-Za-z0-9]){0,38})$/);
-        if (!m)
-            continue;
-        const login = m[1];
-        const key = login.toLowerCase();
-        if (seen.has(key))
-            continue;
-        seen.add(key);
-        logins.push(login);
-    }
-    return logins;
-}
-
 ;// CONCATENATED MODULE: ./src/commands/claim.ts
+
 
 
 
@@ -32475,13 +32577,26 @@ function parseParticipants(value) {
  * Unclaimed item with no assignees — except that a co-participant listed in the issue form may
  * join a held task (see tryJoinAsParticipant). Writes are ordered to fail closed: status +
  * expiry are set before assignment, so the sweep never sees a Claimed item with a missing expiry.
+ *
+ * With `participant-claim`, one branch is inserted ahead of those guardrails: the issue's author
+ * and the participants they declared may claim from any column (see registerEntitled). A registry
+ * board should never tell somebody their own intention is unavailable, and that branch is also the
+ * self-service repair for a card left in an odd state by a manual board edit.
  */
 async function handleClaim(deps, expiryArg, note) {
     const { octokit, repoOctokit, cfg, ctx, owner, repo, issueNumber, actor } = deps;
     const now = new Date();
+    // One read, up front: the author is needed for every cc line, and the body for entitlement, for
+    // the join path, and for diagnosing a handle the parser could not read.
+    const issue = await getIssue(repoOctokit, owner, repo, issueNumber);
+    // Every message that declines a claim names the people who can do something about it: the
+    // registration's author, and the project's maintainers.
+    const cc = maintainerCc(cfg, [issue.author]);
     const item = await getIssueItem(octokit, owner, repo, issueNumber, ctx);
     if (!item) {
-        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this issue isn't on the **${cfg.projectTitle}** board yet, so it can't be claimed. A maintainer needs to add it first.`);
+        // An intention opened through the form should have been added automatically, so this means
+        // something is wrong with the board or the workflow rather than with the commenter.
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this issue isn't on the **${cfg.projectTitle}** board, so it can't be claimed.${cc}`);
         return;
     }
     const assignees = await getAssignees(repoOctokit, owner, repo, issueNumber);
@@ -32504,7 +32619,7 @@ async function handleClaim(deps, expiryArg, note) {
         }
         const res = resolveExpiry(expiryArg, now, cfg.defaultTtl, cfg.maxTtlMs);
         if (!res.ok) {
-            await comment(repoOctokit, owner, repo, issueNumber, `@${actor} ${res.reason}`);
+            await comment(repoOctokit, owner, repo, issueNumber, `@${actor} ${res.reason}${cc}`);
             return;
         }
         await setExpiry(octokit, ctx, item.itemId, toStorage(res.expiry));
@@ -32512,18 +32627,28 @@ async function handleClaim(deps, expiryArg, note) {
         await comment(repoOctokit, owner, repo, issueNumber, `@${actor} claim renewed — now expires **${formatExpiry(res.expiry)}**.`);
         return;
     }
+    // ---- Entitled path: the author and declared participants are never turned away ----
+    if (cfg.participantClaim && isEntitled(actor, issue.author, issue.body, cfg.claimParticipantsField)) {
+        await registerEntitled(deps, item, assignees, expiryArg, note, issue.state, cc);
+        return;
+    }
     // ---- Fresh claim path: enforce guardrails --------------------------------
     if (isTerminal(cfg, statusName)) {
-        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this task is **${statusName}**, so there's nothing to claim.`);
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this task is **${statusName}**, so there's nothing to claim.${cc}`);
         return;
     }
     if (item.statusOptionId !== unclaimedId || assignees.length > 0) {
         // A held task refuses new claimants — unless the actor is on the registration's invitation
         // list, in which case `claim` means "join" rather than "take over".
-        if (await tryJoinAsParticipant(deps, item, assignees, expiryArg, note))
+        if (await tryJoinAsParticipant(deps, item, assignees, expiryArg, note, issue.body, cc))
+            return;
+        // Before turning somebody away as a stranger, check whether they were meant to be a
+        // participant and only a mistyped handle stands in the way; that is a fault to report, not a
+        // refusal to explain away.
+        if (await explainUnreadableHandle(deps, issue, cc))
             return;
         const who = assignees.length ? assignees.map((a) => `@${a}`).join(', ') : 'someone';
-        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this task isn't available — it's currently **${statusName ?? 'not Unclaimed'}** (held by ${who}). It will free up if the claim is disclaimed or expires.`);
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this task isn't available — it's currently **${statusName ?? 'not Unclaimed'}** (held by ${who}). It will free up if the claim is disclaimed or expires.${cc}`);
         return;
     }
     // Expiry disabled for the project: behave like the classic TTL-less bot.
@@ -32537,7 +32662,7 @@ async function handleClaim(deps, expiryArg, note) {
     }
     const res = resolveExpiry(expiryArg, now, cfg.defaultTtl, cfg.maxTtlMs);
     if (!res.ok) {
-        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} ${res.reason}`);
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} ${res.reason}${cc}`);
         return;
     }
     // Fail-closed order: write the expiry BEFORE flipping to Claimed, so the item is never
@@ -32554,6 +32679,79 @@ async function handleClaim(deps, expiryArg, note) {
     await comment(repoOctokit, owner, repo, issueNumber, lines.join('\n\n'));
 }
 /**
+ * Was this commenter meant to be a participant, but written without the leading `@` the parser
+ * requires? If so, say precisely that, and tell the people who can put it right.
+ *
+ * The comparison is against the tokens the parser rejected, not against the handles it accepted, so
+ * it fires exactly when somebody has been made invisible by a typing slip. Returns true when it has
+ * answered the comment, so the caller skips the ordinary refusal.
+ */
+async function explainUnreadableHandle(deps, issue, cc) {
+    const { repoOctokit, cfg, owner, repo, issueNumber, actor } = deps;
+    if (!cfg.claimParticipantsField)
+        return false;
+    const { unreadable } = scanParticipants(readFormField(issue.body, cfg.claimParticipantsField));
+    const mine = unreadable.find((t) => t.replace(/^@/, '').toLowerCase() === actor.toLowerCase());
+    if (!mine)
+        return false;
+    await comment(repoOctokit, owner, repo, issueNumber, `@${actor} you're named in the "${cfg.claimParticipantsField}" field as \`${mine.replace(/`/g, '')}\`, but without the leading \`@\` a handle isn't recognised, so I couldn't treat you as a participant. Once the field reads \`@${actor}\`, comment \`claim\` again and I'll register you.${cc}`);
+    return true;
+}
+/**
+ * Register an entitled commenter — the issue's author, or somebody they declared as a participant
+ * — whatever column the card is in.
+ *
+ * The status is only ever moved forward into the claimed column when the card is not already in an
+ * active one, so a claim can never drag a card back out of In Progress or In Review. A closed issue
+ * is refused, since an intention that is simultaneously closed and actively registered is a
+ * contradiction the board cannot express. The expiry is resolved before anything is written, so a
+ * malformed date changes nothing; the assignment is then confirmed to have stuck before the board
+ * is touched, so a rejected assignment cannot leave a card registered to nobody.
+ */
+async function registerEntitled(deps, item, assignees, expiryArg, note, issueState, cc) {
+    const { octokit, repoOctokit, cfg, ctx, owner, repo, issueNumber, actor } = deps;
+    if (issueState === 'closed') {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this issue is closed, so I've left the board alone. Reopen it and comment \`claim\` again to register.${cc}`);
+        return;
+    }
+    const claimedId = requireOption(ctx, cfg.statusClaimed);
+    const active = new Set([claimedId, optionId(ctx, cfg.statusInProgress), optionId(ctx, cfg.statusInReview)]
+        .filter((id) => id !== null));
+    const alreadyActive = item.statusOptionId !== null && active.has(item.statusOptionId);
+    const joiningExisting = alreadyActive && assignees.length > 0;
+    // A bare claim by somebody joining an existing registration preserves its shared expiry.
+    let expiry = null;
+    if (expiryEnabled(cfg) && (!joiningExisting || expiryArg.trim().length > 0)) {
+        const res = resolveExpiry(expiryArg, new Date(), cfg.defaultTtl, cfg.maxTtlMs);
+        if (!res.ok) {
+            await comment(repoOctokit, owner, repo, issueNumber, `@${actor} ${res.reason}${cc}`);
+            return;
+        }
+        expiry = res.expiry;
+    }
+    await issues_assign(repoOctokit, owner, repo, issueNumber, actor);
+    const after = await getAssignees(repoOctokit, owner, repo, issueNumber);
+    if (!after.some((a) => a.toLowerCase() === actor.toLowerCase())) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} GitHub didn't accept the assignment, so I couldn't register you on this intention.${cc}`);
+        return;
+    }
+    if (expiry)
+        await setExpiry(octokit, ctx, item.itemId, toStorage(expiry));
+    if (!alreadyActive)
+        await setStatus(octokit, ctx, item.itemId, claimedId);
+    // Only a first holder may clear a note left behind; a joiner must not wipe the group's note.
+    await writeNote(deps, item.itemId, note, assignees.length === 0);
+    const others = assignees.filter((a) => a.toLowerCase() !== actor.toLowerCase());
+    let line = others.length
+        ? `@${actor} you've joined this registration alongside ${others.map((a) => `@${a}`).join(', ')}.`
+        : `@${actor} you're registered as working on this.`;
+    if (!alreadyActive)
+        line += ` It's now **${cfg.statusClaimed}**.`;
+    if (expiry)
+        line += ` This registration expires **${formatExpiry(expiry)}**.`;
+    await comment(repoOctokit, owner, repo, issueNumber, line);
+}
+/**
  * Join an active registration as a listed co-participant.
  *
  * The issue form's participants field (`claim-participants-field`) is the author's explicit
@@ -32566,7 +32764,7 @@ async function handleClaim(deps, expiryArg, note) {
  * Returns true when the comment was handled here (joined, or failed with its own diagnostic);
  * false hands back to the ordinary refusal.
  */
-async function tryJoinAsParticipant(deps, item, assignees, expiryArg, note) {
+async function tryJoinAsParticipant(deps, item, assignees, expiryArg, note, body, cc) {
     const { octokit, repoOctokit, cfg, ctx, owner, repo, issueNumber, actor } = deps;
     if (!cfg.claimParticipantsField)
         return false;
@@ -32577,7 +32775,6 @@ async function tryJoinAsParticipant(deps, item, assignees, expiryArg, note) {
         return false;
     if (assignees.some((a) => a.toLowerCase() === actor.toLowerCase()))
         return false;
-    const body = await getIssueBody(repoOctokit, owner, repo, issueNumber);
     const listed = parseParticipants(readFormField(body, cfg.claimParticipantsField));
     if (!listed.some((p) => p.toLowerCase() === actor.toLowerCase()))
         return false;
@@ -32586,7 +32783,7 @@ async function tryJoinAsParticipant(deps, item, assignees, expiryArg, note) {
     await issues_assign(repoOctokit, owner, repo, issueNumber, actor);
     const after = await getAssignees(repoOctokit, owner, repo, issueNumber);
     if (!after.some((a) => a.toLowerCase() === actor.toLowerCase())) {
-        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} you're listed as a participant here, but GitHub didn't accept the assignment, so I couldn't register you on this task.`);
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} you're listed as a participant here, but GitHub didn't accept the assignment, so I couldn't register you on this task.${cc}`);
         return true;
     }
     const holders = assignees.map((a) => `@${a}`).join(', ');
@@ -32599,7 +32796,7 @@ async function tryJoinAsParticipant(deps, item, assignees, expiryArg, note) {
         }
         else {
             // Forgiving like auto-claim: the join stands, only the expiry change is declined.
-            line += ` I've left the shared expiry unchanged, though — ${res.reason}`;
+            line += ` I've left the shared expiry unchanged, though — ${res.reason}${cc}`;
         }
     }
     await writeNote(deps, item.itemId, note);
@@ -32842,7 +33039,64 @@ async function handleWithdraw(deps, pr) {
     await comment(repoOctokit, owner, repo, issueNumber, `@${actor} withdrew PR #${pr}; task is back to **${cfg.statusClaimed}** and still yours.`);
 }
 
+;// CONCATENATED MODULE: ./src/commands/status.ts
+
+
+
+
+/**
+ * Handle `progress` / `review` / `done`: a holder moves their own card between columns.
+ *
+ * The pull-request routes into In Progress and In Review (`propose`, and the automatic `Closes #N`
+ * linkage) only recognise pull requests targeting this same repository. A registry whose entries
+ * describe work carried out elsewhere therefore has no way to reach those columns at all, which
+ * leaves every registrant dependent on a maintainer moving cards by hand. These commands close
+ * that gap without involving a pull request.
+ *
+ * Authority is deliberately narrow: only somebody already registered on the intention may move it,
+ * plus (under `participant-claim`) the author and declared participants, who are entitled to act on
+ * their own intention even before anyone has been assigned to it.
+ */
+async function handleStatus(deps, target) {
+    const { octokit, repoOctokit, cfg, ctx, owner, repo, issueNumber, actor } = deps;
+    const wanted = target === 'in-progress' ? cfg.statusInProgress :
+        target === 'in-review' ? cfg.statusInReview :
+            cfg.statusCompleted;
+    const item = await getIssueItem(octokit, owner, repo, issueNumber, ctx);
+    if (!item) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this issue isn't on the **${cfg.projectTitle}** board, so there's no card to move.`);
+        return;
+    }
+    const issue = await getIssue(repoOctokit, owner, repo, issueNumber);
+    if (issue.state === 'closed' && target !== 'completed') {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this issue is closed, so I've left the board alone. Reopen it before moving it back to an active column.`);
+        return;
+    }
+    const assignees = await getAssignees(repoOctokit, owner, repo, issueNumber);
+    let allowed = assignees.some((a) => a.toLowerCase() === actor.toLowerCase());
+    if (!allowed && cfg.participantClaim) {
+        allowed = isEntitled(actor, issue.author, issue.body, cfg.claimParticipantsField);
+    }
+    if (!allowed) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} only somebody registered on this intention can move it. Comment \`claim\` to register yourself first.`);
+        return;
+    }
+    const targetId = optionId(ctx, wanted);
+    if (!targetId) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this board has no **${wanted}** column, so there's nowhere to move the card.`);
+        return;
+    }
+    if (item.statusOptionId === targetId) {
+        await comment(repoOctokit, owner, repo, issueNumber, `@${actor} this is already **${wanted}**.`);
+        return;
+    }
+    await setStatus(octokit, ctx, item.itemId, targetId);
+    await comment(repoOctokit, owner, repo, issueNumber, `@${actor} moved to **${wanted}**.`);
+}
+
 ;// CONCATENATED MODULE: ./src/sweep.ts
+
+
 
 
 
@@ -32866,6 +33120,10 @@ function sameSet(a, b) {
  * still due at the moment of mutation.
  */
 async function runSweep(octokit, repoOctokit, cfg, ctx) {
+    // Runs before the expiry pass, and outside its early return, so the board keeps its shape even
+    // on a project that has switched expiry off entirely.
+    if (cfg.enforceHolder)
+        await reconcileHolders(octokit, repoOctokit, cfg, ctx);
     if (!expiryEnabled(cfg)) {
         core.info('Expiry is disabled for this project (default-ttl: none); sweep is a no-op.');
         return;
@@ -32899,6 +33157,133 @@ async function runSweep(octokit, repoOctokit, cfg, ctx) {
         }
     }
     core.info(`Sweep complete: ${expired} expired, ${backfilled} backfilled.`);
+}
+/**
+ * Keep every card in a shape the rest of the bot can reason about: give each one a column, and
+ * make sure an active card has somebody holding it.
+ *
+ * Two malformed shapes arise in practice, both from board edits made by hand, which no webhook a
+ * repository workflow can subscribe to would report. A card with no status at all is invisible in a
+ * board grouped by status and is refused by `claim` as "not Unclaimed"; a card sitting in an active
+ * column with nobody assigned is refused as "held by someone", naming a holder who does not exist.
+ * Reconciling here repairs both within one sweep of them appearing.
+ *
+ * A statusless card is placed by what it already carries: holders mean it is registered, so it goes
+ * to the claimed column; no holders means it is free, so it goes to the unclaimed one. The author is
+ * used as the fallback holder only when the assignee list is empty, so any deliberate choice — the
+ * bot's or a maintainer's — is left exactly as it stands. Terminal columns are not touched, since a
+ * finished piece of work needs no holder.
+ */
+async function reconcileHolders(octokit, repoOctokit, cfg, ctx) {
+    const claimedId = ctx.statusOptionIdByName.get(cfg.statusClaimed.toLowerCase());
+    const unclaimedId = ctx.statusOptionIdByName.get(cfg.statusUnclaimed.toLowerCase());
+    if (!claimedId || !unclaimedId) {
+        core.warning('enforce-holder is on, but the claimed/unclaimed status options do not resolve; skipping reconciliation.');
+        return;
+    }
+    const active = new Set([claimedId]);
+    for (const name of [cfg.statusInProgress, cfg.statusInReview]) {
+        const id = ctx.statusOptionIdByName.get(name.toLowerCase());
+        if (id)
+            active.add(id);
+    }
+    // Holder repairs concern the active columns, but the participants audit concerns every card, so
+    // enumerate the whole board in one query and let each check pick what it cares about.
+    const everywhere = new Set([...active, unclaimedId]);
+    for (const name of [cfg.statusCompleted, ...cfg.terminalStatuses]) {
+        const id = ctx.statusOptionIdByName.get(name.toLowerCase());
+        if (id)
+            everywhere.add(id);
+    }
+    const items = await listItemsByStatus(octokit, ctx, everywhere, { includeStatusless: true });
+    let placed = 0;
+    let filled = 0;
+    for (const it of items) {
+        try {
+            await auditParticipants(repoOctokit, cfg, it);
+            if (it.statusOptionId !== null && !active.has(it.statusOptionId))
+                continue;
+            if (it.statusOptionId === null) {
+                const held = it.assignees.length > 0;
+                const columnName = held ? cfg.statusClaimed : cfg.statusUnclaimed;
+                await setStatus(octokit, ctx, it.itemId, held ? claimedId : unclaimedId);
+                placed++;
+                core.info(`#${it.issueNumber}: had no status; placed in ${columnName}.`);
+                await reportRepair(repoOctokit, cfg, it, `this card had no status on the **${cfg.projectTitle}** board, so I've put it in **${columnName}** (${held ? 'somebody is registered on it' : 'nobody is registered on it'}).`);
+                continue;
+            }
+            if (it.assignees.length > 0)
+                continue;
+            if (!it.author) {
+                core.warning(`#${it.issueNumber}: no holder and no readable author; leaving alone.`);
+                continue;
+            }
+            await issues_assign(repoOctokit, it.issueOwner, it.issueRepo, it.issueNumber, it.author);
+            const after = await getAssignees(repoOctokit, it.issueOwner, it.issueRepo, it.issueNumber);
+            if (!after.some((a) => a.toLowerCase() === it.author.toLowerCase())) {
+                core.info(`#${it.issueNumber}: GitHub didn't accept the author @${it.author} as an assignee; leaving alone.`);
+                continue;
+            }
+            filled++;
+            core.info(`#${it.issueNumber}: active with no holder; assigned the author @${it.author}.`);
+            await reportRepair(repoOctokit, cfg, it, `this card was in an active column with nobody registered on it, so I've assigned @${it.author}, who opened it.`);
+        }
+        catch (err) {
+            core.warning(`#${it.issueNumber}: reconciliation failed: ${err.message}`);
+        }
+    }
+    core.info(`Holder reconciliation: ${placed} card(s) placed, ${filled} holder(s) restored.`);
+}
+/**
+ * Report a participants field naming somebody the parser cannot read, on every card, for as long as
+ * the fault persists.
+ *
+ * Unlike a holder repair, this is not something the bot can put right: only a human can add the
+ * missing `@`. Such a check therefore needs a memory, or it would repeat itself every few hours.
+ * The memory is a hidden marker in the comment it posts, listing exactly what was unreadable, so
+ * the warning is repeated when — and only when — the set of unreadable names changes. The author is
+ * cc'd because it is their field to correct, and the maintainers because a registration silently
+ * naming nobody is precisely the sort of fault that otherwise goes unnoticed.
+ */
+async function auditParticipants(repoOctokit, cfg, it) {
+    if (!cfg.claimParticipantsField || !it.issueOwner || !it.issueRepo)
+        return;
+    const { unreadable } = scanParticipants(readFormField(it.body, cfg.claimParticipantsField));
+    if (unreadable.length === 0)
+        return;
+    const key = [...unreadable].map((t) => t.toLowerCase()).sort().join(',');
+    const marker = `<!-- intentions:participants-unreadable ${key} -->`;
+    try {
+        if (await issueHasMarker(repoOctokit, it.issueOwner, it.issueRepo, it.issueNumber, marker))
+            return;
+        const shown = unreadable.slice(0, 5).map((t) => `\`${t.replace(/`/g, '')}\``).join(', ');
+        const more = unreadable.length > 5 ? `, and ${unreadable.length - 5} more` : '';
+        await comment(repoOctokit, it.issueOwner, it.issueRepo, it.issueNumber, `:warning: The "${cfg.claimParticipantsField}" field names ${shown}${more}, which I can't read as GitHub handles — each one needs its leading \`@\`, as in \`@alice\`. Until the field is corrected these people aren't registered, and \`claim\` won't recognise them either.${maintainerCc(cfg, [it.author])}\n\n${marker}`);
+        core.info(`#${it.issueNumber}: reported ${unreadable.length} unreadable participant name(s).`);
+    }
+    catch (err) {
+        core.warning(`#${it.issueNumber}: could not audit participants: ${err.message}`);
+    }
+}
+/**
+ * Announce a repair on the issue it was made to, so the registrant sees why the bot touched their
+ * card, and cc the maintainers named in `notify-maintainers` so somebody responsible learns that a
+ * malformed card existed at all — these shapes come from board edits made by hand, which no webhook
+ * a repository workflow can subscribe to would report.
+ *
+ * Only successful repairs are announced, and each repair makes its own precondition false, so a
+ * card is announced once and never again. Failures are logged as warnings instead, since a repair
+ * that keeps failing would otherwise comment on every sweep. A failure to comment must never abort
+ * the reconciliation: the repair itself has already landed and matters more than its announcement.
+ */
+async function reportRepair(repoOctokit, cfg, it, what) {
+    const cc = maintainerCc(cfg, [it.author]);
+    try {
+        await comment(repoOctokit, it.issueOwner, it.issueRepo, it.issueNumber, `:wrench: ${what}${cc}${cc ? ' — a card in this shape usually follows a board edit made by hand.' : ''}`);
+    }
+    catch (err) {
+        core.warning(`#${it.issueNumber}: repaired, but could not comment: ${err.message}`);
+    }
 }
 async function processCandidate(octokit, repoOctokit, cfg, ctx, c, now, onExpire, onBackfill) {
     const owner = c.issueOwner;
@@ -33061,8 +33446,15 @@ async function runIssueEvent(octokit, repoOctokit, cfg, ctx, action) {
         const unclaimed = optionId(ctx, cfg.statusUnclaimed);
         // Only revert a Completed item; never disturb an active claim that was reopened.
         if (completed && unclaimed && item.statusOptionId === completed) {
-            await setStatus(octokit, ctx, item.itemId, unclaimed);
-            core.info(`#${num}: reopened -> ${cfg.statusUnclaimed}.`);
+            // Closing an issue does not unassign anybody, so a reopened item may still have its holders.
+            // Sending it to the unclaimed column whilst they remain produces a card nobody can claim: the
+            // holders are refused because it is not free, everybody else because somebody holds it. Return
+            // a still-held item to the claimed column instead, and only a genuinely empty one to unclaimed.
+            const claimed = optionId(ctx, cfg.statusClaimed);
+            const holders = await getAssignees(repoOctokit, owner, repo, num);
+            const target = holders.length > 0 && claimed ? claimed : unclaimed;
+            await setStatus(octokit, ctx, item.itemId, target);
+            core.info(`#${num}: reopened -> ${target === unclaimed ? cfg.statusUnclaimed : cfg.statusClaimed}.`);
         }
     }
 }
@@ -33093,7 +33485,7 @@ async function autoClaimOnOpen(octokit, repoOctokit, cfg, ctx, owner, repo, num,
         core.info(`#${num}: GitHub didn't accept @${author} as an assignee; left ${cfg.statusUnclaimed} for a manual claim.`);
         return;
     }
-    const { added, missing } = await registerParticipants(repoOctokit, cfg, owner, repo, num, author, body);
+    const { added, missing, unreadable } = await registerParticipants(repoOctokit, cfg, owner, repo, num, author, body);
     let expiry = null;
     let expiryNote = '';
     if (expiryEnabled(cfg)) {
@@ -33128,13 +33520,30 @@ async function autoClaimOnOpen(octokit, repoOctokit, cfg, ctx, owner, repo, num,
     if (missing.length) {
         first += ` I couldn't register ${missing.map((m) => `@${m}`).join(', ')} — GitHub only lets me assign collaborators, org members, or people who have commented on the issue. Anyone listed can comment \`claim\` here to add themselves.`;
     }
+    if (unreadable.length) {
+        // A handle must carry a leading @, so that ordinary prose in a free-text field cannot be
+        // mistaken for an assignment. Name each token that was dropped, rather than leaving somebody
+        // unregistered with nothing to explain why.
+        const shown = unreadable.slice(0, 5).map((t) => `\`${t.replace(/`/g, '')}\``).join(', ');
+        const more = unreadable.length > 5 ? `, and ${unreadable.length - 5} more` : '';
+        first += ` I couldn't read ${shown}${more} in the "${cfg.claimParticipantsField}" field as GitHub handles — each one needs its leading \`@\`, as in \`@alice\`. Edit the issue to correct them, and they can then comment \`claim\` to join.`;
+    }
     // When the form requires an absolute date, don't advertise a duration example the form would reject.
     const changeHint = cfg.claimExpiryRequireDate ? 'e.g. `claim 2026-09-01`' : 'e.g. `claim 2 weeks` or `claim 2026-09-01`';
     const second = expiryEnabled(cfg)
         ? `Comment \`claim <when>\` to change the expiry (${changeHint}), \`claim\` again to renew, or \`disclaim\` to release it.`
         : 'Comment `disclaim` to release it once you\'re done.';
-    await comment(repoOctokit, owner, repo, num, `${first}\n\n${second}`);
-    core.info(`#${num}: auto-claimed for @${author}${added.length ? ` with participants ${added.join(', ')}` : ''}.`);
+    // Registration is the one moment a registrant is told that something went partly wrong — a
+    // participant who could not be assigned, a name that could not be read, an expiry that could not
+    // be used — and until now that was said to them alone. The registrant may not grasp the
+    // consequence: a credible date quietly replaced by the project default expires their work far
+    // earlier than they asked for. So cc whoever the project has named, but only when there is
+    // something to report, since a clean registration should notify nobody.
+    const shortfall = Boolean(expiryNote) || missing.length > 0 || unreadable.length > 0;
+    // The message already opens by @-mentioning the author, so the cc adds only the maintainers.
+    const cc = shortfall ? maintainerCc(cfg) : '';
+    await comment(repoOctokit, owner, repo, num, `${first}\n\n${second}${cc}`);
+    core.info(`#${num}: auto-claimed for @${author}${added.length ? ` with participants ${added.join(', ')}` : ''}${shortfall ? ' (with a shortfall reported)' : ''}.`);
 }
 /**
  * Register the co-participants a registrant listed in the issue form (`claim-participants-field`)
@@ -33149,15 +33558,16 @@ async function autoClaimOnOpen(octokit, repoOctokit, cfg, ctx, owner, repo, num,
  */
 async function registerParticipants(repoOctokit, cfg, owner, repo, num, author, body) {
     if (!cfg.claimParticipantsField)
-        return { added: [], missing: [] };
+        return { added: [], missing: [], unreadable: [] };
     // GitHub caps an issue at ten assignees and the author holds one, so nine is every slot the form
     // can fill. Probing past that is wasted calls on a free-text field a paste can flood; the excess
     // is still named in the confirmation comment rather than dropped silently.
     const maxParticipants = 9;
-    const all = parseParticipants(readFormField(body, cfg.claimParticipantsField))
-        .filter((p) => p.toLowerCase() !== author.toLowerCase());
+    const scan = scanParticipants(readFormField(body, cfg.claimParticipantsField));
+    const unreadable = scan.unreadable;
+    const all = scan.logins.filter((p) => p.toLowerCase() !== author.toLowerCase());
     if (all.length === 0)
-        return { added: [], missing: [] };
+        return { added: [], missing: [], unreadable };
     const listed = all.slice(0, maxParticipants);
     const overflow = all.slice(maxParticipants);
     if (overflow.length)
@@ -33175,11 +33585,11 @@ async function registerParticipants(repoOctokit, cfg, owner, repo, num, author, 
         const after = new Set((await getAssignees(repoOctokit, owner, repo, num)).map((a) => a.toLowerCase()));
         const added = assignable.filter((p) => after.has(p.toLowerCase()));
         const dropped = assignable.filter((p) => !after.has(p.toLowerCase()));
-        return { added, missing: [...rejected, ...dropped, ...overflow] };
+        return { added, missing: [...rejected, ...dropped, ...overflow], unreadable };
     }
     catch (err) {
         core.warning(`#${num}: could not register participants (${err.message}); continuing with the author alone.`);
-        return { added: [], missing: all };
+        return { added: [], missing: all, unreadable };
     }
 }
 async function runPullEvent(octokit, repoOctokit, cfg, ctx, action) {
@@ -33306,6 +33716,7 @@ async function casSetStatus(octokit, ctx, owner, repo, num, seen, targetOptionId
 
 
 
+
 async function main() {
     const cfg = readConfig();
     const octokit = (0,github.getOctokit)(cfg.token);
@@ -33379,6 +33790,15 @@ async function main() {
             break;
         case 'withdraw':
             await handleWithdraw(deps, command.pr);
+            break;
+        case 'status':
+            // Off by default: a project that has not enabled them should not have ordinary words like
+            // "done" quietly moving its board.
+            if (!cfg.statusCommands) {
+                core.info(`Status commands are disabled (status-commands: false); ignoring "${command.target}".`);
+                break;
+            }
+            await handleStatus(deps, command.target);
             break;
     }
 }

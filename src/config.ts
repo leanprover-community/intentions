@@ -28,6 +28,10 @@ export interface Config {
   claimExpiryField: string
   claimExpiryRequireDate: boolean
   claimParticipantsField: string
+  participantClaim: boolean
+  enforceHolder: boolean
+  notifyMaintainers: string[]
+  statusCommands: boolean
 }
 
 /** True when the project has turned expiry off entirely (default-ttl: none). */
@@ -118,6 +122,13 @@ export function readConfig(): Config {
     claimExpiryField: core.getInput('claim-expiry-field') || '',
     claimExpiryRequireDate: boolInput('claim-expiry-require-date', false),
     claimParticipantsField: core.getInput('claim-participants-field') || '',
+    participantClaim: boolInput('participant-claim', false),
+    enforceHolder: boolInput('enforce-holder', false),
+    notifyMaintainers: (core.getInput('notify-maintainers') || '')
+      .split(',')
+      .map((s) => s.trim().replace(/^@/, ''))
+      .filter(Boolean),
+    statusCommands: boolInput('status-commands', false),
   }
 }
 

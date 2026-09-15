@@ -64,6 +64,22 @@ inputs:
     description: 'Issue-form field label listing co-participants'' GitHub handles (e.g. "Participants"). On open (with claim-on-open), everyone listed that GitHub accepts as an assignee is registered alongside the author; afterwards, anyone listed there may comment `claim` to join the active registration as a co-holder. Empty disables both.'
     required: false
     default: ''
+  participant-claim:
+    description: 'Let the issue author, and anybody listed in claim-participants-field, `claim` from any column instead of only a free one. Intended for registry boards, where the person who registered an intention should never be told it is unavailable; everybody else stays bound by the ordinary status rules, so a free card can still be picked up by a newcomer.'
+    required: false
+    default: 'false'
+  enforce-holder:
+    description: 'Have the sweep keep the board well-formed: give every card a column (a card with holders goes to the claimed status, one without to the unclaimed status), and assign the issue author to any card in an active column that has no assignee. The author is a fallback only, applied when the assignee list is empty, so explicit choices are never overwritten.'
+    required: false
+    default: 'false'
+  notify-maintainers:
+    description: 'Comma-separated logins to cc when the enforce-holder reconciliation repairs a malformed card (e.g. "alice,bob"). Empty posts the repair note without mentioning anybody. Only successful repairs are announced, and each is announced once.'
+    required: false
+    default: ''
+  status-commands:
+    description: 'Enable the `progress` / `review` / `done` comment commands, which let a holder move their own card between columns without a pull request. Off by default so ordinary words cannot move a board that has not opted in.'
+    required: false
+    default: 'false'
   terminal-statuses:
     description: 'Comma-separated status names the bot recognizes but does not manage (claims here are refused cleanly).'
     required: false

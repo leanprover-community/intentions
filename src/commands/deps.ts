@@ -18,6 +18,24 @@ export interface Deps {
   actor: string
 }
 
+/**
+ * The trailing "cc" line for a message that somebody responsible ought to see: a card the bot
+ * cannot act on, or a registration that will not work until a human edits it. Empty when the
+ * project has named nobody, so the message still stands on its own.
+ */
+export function maintainerCc(cfg: Config, alsoMention: string[] = []): string {
+  const seen = new Set<string>()
+  const who = [...alsoMention, ...cfg.notifyMaintainers]
+    .map((m) => m.replace(/^@/, ''))
+    .filter((m) => {
+      const k = m.toLowerCase()
+      if (!m || seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+  return who.length ? `\n\ncc ${who.map((m) => `@${m}`).join(' ')}` : ''
+}
+
 export function optionId(ctx: ProjectContext, name: string): string | null {
   return ctx.statusOptionIdByName.get(name.toLowerCase()) ?? null
 }
