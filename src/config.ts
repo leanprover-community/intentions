@@ -21,6 +21,8 @@ export interface Config {
   defaultTtl: TtlSetting
   maxTtlMs: number | null
   expireInProgress: boolean
+  /** how long before an expiry its holders are warned, in ms; null when no warning is wanted */
+  expiryWarningMs: number | null
   backfillLegacy: BackfillMode
   autoAdd: boolean
   autoAddLabels: string[]
@@ -85,6 +87,7 @@ function parseBackfill(raw: string): BackfillMode {
 
 export function readConfig(): Config {
   const defaultTtl = parseTtlSetting(core.getInput('default-ttl') || '30d')
+  const warning = parseTtlSetting(core.getInput('expiry-warning') || '')
   const maxTtl = parseTtlSetting(core.getInput('max-ttl') || '90d')
 
   // The project token writes Projects v2 (the default GITHUB_TOKEN can't). Issue/PR REST ops use
@@ -112,6 +115,7 @@ export function readConfig(): Config {
     defaultTtl,
     maxTtlMs: maxTtl.disabled ? null : maxTtl.ms,
     expireInProgress: core.getBooleanInput('expire-in-progress'),
+    expiryWarningMs: warning.disabled ? null : warning.ms,
     backfillLegacy: parseBackfill(core.getInput('backfill-legacy') || 'grace'),
     autoAdd: boolInput('auto-add', true),
     autoAddLabels: (core.getInput('auto-add-labels') || '')

@@ -172,3 +172,16 @@ export function formatDuration(ms: number): string {
   if (ms % MS_PER_HOUR === 0) return `${ms / MS_PER_HOUR} hour(s)`
   return `${Math.round(ms / MS_PER_HOUR)} hour(s)`
 }
+
+/**
+ * Is a recorded expiry near enough to warrant warning those who hold it?
+ *
+ * True when the expiry lies in the future and no further off than `windowMs`. An expiry already
+ * past is excluded, that case being the province of the release itself and not of a warning; a
+ * null window signifies that the project has asked for no warning at all.
+ */
+export function warningIsDue(due: Date, now: Date, windowMs: number | null): boolean {
+  if (windowMs === null) return false
+  const remaining = due.getTime() - now.getTime()
+  return remaining > 0 && remaining <= windowMs
+}

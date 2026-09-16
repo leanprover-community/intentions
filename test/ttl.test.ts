@@ -1,15 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  parseDurationMs,
-  parseTtlSetting,
-  parseInstant,
-  resolveExpiry,
-  toStorage,
-  formatExpiry,
-  MS_PER_HOUR,
-  MS_PER_DAY,
-} from '../src/ttl.js'
+import { parseDurationMs, parseTtlSetting, parseInstant, resolveExpiry, toStorage, formatExpiry, MS_PER_HOUR, MS_PER_DAY, warningIsDue } from '../src/ttl.js'
 
 test('parseDurationMs: hour spellings', () => {
   for (const s of ['1h', '1 h', '1hr', '1 hr', '1hrs', '1 hour', '1 hours']) {
@@ -136,4 +127,36 @@ test('toStorage drops milliseconds, formatExpiry is human', () => {
   const d = new Date('2026-08-01T14:00:00.000Z')
   assert.equal(toStorage(d), '2026-08-01T14:00:00Z')
   assert.equal(formatExpiry(d), '2026-08-01 14:00 UTC')
+})
+
+// ---- warningIsDue ----------------------------------------------------------------------------
+
+test('warningIsDue: an expiry within the window is warned of', () => {
+  const now = new Date('2026-09-16T00:00:00Z')
+  const due = new Date('2026-09-20T00:00:00Z')
+  assert.equal(warningIsDue(due, now, 7 * MS_PER_DAY), true)
+})
+
+test('warningIsDue: an expiry beyond the window is not', () => {
+  const now = new Date('2026-09-16T00:00:00Z')
+  const due = new Date('2026-10-20T00:00:00Z')
+  assert.equal(warningIsDue(due, now, 7 * MS_PER_DAY), false)
+})
+
+test('warningIsDue: an expiry already past is not warned of', () => {
+  const now = new Date('2026-09-16T00:00:00Z')
+  const due = new Date('2026-09-15T00:00:00Z')
+  assert.equal(warningIsDue(due, now, 7 * MS_PER_DAY), false)
+})
+
+test('warningIsDue: the boundary of the window is included', () => {
+  const now = new Date('2026-09-16T00:00:00Z')
+  const due = new Date(now.getTime() + 7 * MS_PER_DAY)
+  assert.equal(warningIsDue(due, now, 7 * MS_PER_DAY), true)
+})
+
+test('warningIsDue: a null window asks for no warning whatever', () => {
+  const now = new Date('2026-09-16T00:00:00Z')
+  const due = new Date('2026-09-17T00:00:00Z')
+  assert.equal(warningIsDue(due, now, null), false)
 })

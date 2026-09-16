@@ -92,6 +92,10 @@ on:
         required: false
         type: string
         default: 90d
+      expiry-warning:
+        required: false
+        type: string
+        default: ''
       expire-in-progress:
         required: false
         type: boolean
@@ -238,5 +242,6 @@ jobs:
           notify-maintainers: ${{ inputs.notify-maintainers }}
           expiry-field: ${{ inputs.expiry-field }}
           default-ttl: ${{ inputs.default-ttl }}
+          expiry-warning: ${{ inputs.expiry-warning }}
           expire-in-progress: ${{ inputs.expire-in-progress }}
           backfill-legacy: ${{ inputs.backfill-legacy }}

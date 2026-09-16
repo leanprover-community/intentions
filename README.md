@@ -284,6 +284,15 @@ closes the issue.
 
 - `default-ttl` (default `30d`) — applied to a bare `claim`.
 - `max-ttl` (default `90d`) — the longest a claimant may request.
+- `expiry-warning` (default empty, i.e. no warning) — how long beforehand the holders of a
+  registration are told that it is about to expire, as a duration such as `7d`. The sweep then
+  posts a single comment upon the issue, mentioning every assignee together with the logins named
+  in `notify-maintainers`, so that GitHub notifies each of them; a mention is the only means by
+  which an Action can cause electronic mail to be sent, there being no facility in the GitHub API
+  for sending it directly. Each recorded expiry is warned of once and once only, the comment
+  carrying a hidden marker bearing that instant, so that a renewal to a later date earns a fresh
+  warning in its turn whilst an unchanged date is not repeated at every sweep. Only registrations
+  in the statuses the sweep manages can be warned of, which is to say those it could also expire.
 - **Opt out entirely:** set `default-ttl: none`. The bot then never records or mentions
   expiry, the sweep is a no-op, and you don't need the `Claim Expires` field or the `schedule`
   trigger. (You still get the commands and the board lifecycle.)
@@ -319,6 +328,7 @@ All inputs (set on the reusable workflow):
 | `terminal-statuses` | `In Review,Completed` | states where a `claim` comment is refused |
 | `expiry-field` | `Claim Expires` | Text field holding the ISO 8601 UTC expiry |
 | `note-field` | `Claim Note` | optional Text field holding the freeform claim note; ignored if absent |
+| `expiry-warning` | `` | how long before an expiry its holders and the `notify-maintainers` logins are warned by a mention, e.g. `7d`; empty asks for no warning |
 | `expire-in-progress` | `false` | also expire *In Progress* items in the sweep |
 | `backfill-legacy` | `grace` | how the sweep treats claims with no expiry: `grace` / `ignore` / `expire` |
 

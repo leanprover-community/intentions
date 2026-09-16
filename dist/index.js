@@ -31848,6 +31848,19 @@ function formatDuration(ms) {
         return `${ms / MS_PER_HOUR} hour(s)`;
     return `${Math.round(ms / MS_PER_HOUR)} hour(s)`;
 }
+/**
+ * Is a recorded expiry near enough to warrant warning those who hold it?
+ *
+ * True when the expiry lies in the future and no further off than `windowMs`. An expiry already
+ * past is excluded, that case being the province of the release itself and not of a warning; a
+ * null window signifies that the project has asked for no warning at all.
+ */
+function warningIsDue(due, now, windowMs) {
+    if (windowMs === null)
+        return false;
+    const remaining = due.getTime() - now.getTime();
+    return remaining > 0 && remaining <= windowMs;
+}
 
 ;// CONCATENATED MODULE: ./src/config.ts
 
@@ -31899,6 +31912,7 @@ function parseBackfill(raw) {
 }
 function readConfig() {
     const defaultTtl = parseTtlSetting(core.getInput('default-ttl') || '30d');
+    const warning = parseTtlSetting(core.getInput('expiry-warning') || '');
     const maxTtl = parseTtlSetting(core.getInput('max-ttl') || '90d');
     // The project token writes Projects v2 (the default GITHUB_TOKEN can't). Issue/PR REST ops use
     // repo-token, which the reusable workflow sets to the job GITHUB_TOKEN; fall back to the project
@@ -31924,6 +31938,7 @@ function readConfig() {
         defaultTtl,
         maxTtlMs: maxTtl.disabled ? null : maxTtl.ms,
         expireInProgress: core.getBooleanInput('expire-in-progress'),
+        expiryWarningMs: warning.disabled ? null : warning.ms,
         backfillLegacy: parseBackfill(core.getInput('backfill-legacy') || 'grace'),
         autoAdd: boolInput('auto-add', true),
         autoAddLabels: (core.getInput('auto-add-labels') || '')
@@ -33235,6 +33250,42 @@ async function reconcileHolders(octokit, repoOctokit, cfg, ctx) {
     core.info(`Holder reconciliation: ${placed} card(s) placed, ${filled} holder(s) restored.`);
 }
 /**
+ * Warn those who hold a registration that it is shortly to expire, naming them and the project's
+ * maintainers so that each is notified.
+ *
+ * A GitHub Action has no means of sending electronic mail. What it has is the mention: naming a
+ * person in a comment causes GitHub to notify that person, which for most accounts means a message
+ * by electronic mail. The warning is therefore a comment upon the issue, mentioning every assignee
+ * together with whoever is named in `notify-maintainers`.
+ *
+ * The warning cannot repair what it reports, and the expiry it concerns remains until it passes or
+ * is renewed, so without some record the sweep would repeat itself at every execution throughout
+ * the final period. The record is a hidden marker carrying the very instant warned of; a renewal to
+ * a later date therefore earns a fresh warning in its turn, whilst the same date is warned of once
+ * and once only. A failure here is reported in the log and permitted to pass, the release itself
+ * being the more important office of the sweep.
+ */
+async function warnOfApproachingExpiry(repoOctokit, cfg, c, due, now) {
+    const windowMs = cfg.expiryWarningMs;
+    if (windowMs === null || !warningIsDue(due, now, windowMs))
+        return;
+    if (!c.issueOwner || !c.issueRepo)
+        return;
+    const marker = `<!-- intentions:expiry-warning ${toStorage(due)} -->`;
+    try {
+        if (await issueHasMarker(repoOctokit, c.issueOwner, c.issueRepo, c.issueNumber, marker))
+            return;
+        const cc = maintainerCc(cfg, c.assignees);
+        await comment(repoOctokit, c.issueOwner, c.issueRepo, c.issueNumber, `:alarm_clock: This registration expires **${formatExpiry(due)}**, which is less than ${formatDuration(windowMs)} away. ` +
+            `Comment \`claim <date>\` to renew it, or \`disclaim\` to release it now. ` +
+            `If nothing is done it will be released to **${cfg.statusUnclaimed}**, its assignees removed, and anybody may then take it up.${cc}\n\n${marker}`);
+        core.info(`#${c.issueNumber}: warned that the registration expires ${formatExpiry(due)}.`);
+    }
+    catch (err) {
+        core.warning(`#${c.issueNumber}: could not warn of the approaching expiry: ${err.message}`);
+    }
+}
+/**
  * Report a participants field naming somebody the parser cannot read, on every card, for as long as
  * the fault persists.
  *
@@ -33319,8 +33370,10 @@ async function processCandidate(octokit, repoOctokit, cfg, ctx, c, now, onExpire
             core.warning(`#${c.issueNumber}: unparseable expiry ${JSON.stringify(c.expiryText)}; skipping.`);
             return;
         }
-        if (due.getTime() > now.getTime())
+        if (due.getTime() > now.getTime()) {
+            await warnOfApproachingExpiry(repoOctokit, cfg, c, due, now);
             return; // not yet due
+        }
     }
     // ---- Compare-and-swap: re-read just before mutating ----------------------
     const fresh = await getIssueItem(octokit, owner, repo, c.issueNumber, ctx);
