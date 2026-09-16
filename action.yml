@@ -100,6 +100,10 @@ inputs:
     description: 'Maximum TTL a claimant may request; longer requests are rejected with a helpful message.'
     required: false
     default: '90d'
+  expiry-warning:
+    description: 'How long before an expiry its holders are warned, as a duration such as "7d". The sweep then posts one comment upon the issue, mentioning every assignee together with the logins in notify-maintainers, so that GitHub notifies each of them; a mention is the only means by which an Action can cause electronic mail to be sent. Each recorded expiry is warned of once. Empty, the default, asks for no warning.'
+    required: false
+    default: ''
   expire-in-progress:
     description: 'Whether the sweep also expires items in the "in progress" status (an open PR was proposed).'
     required: false

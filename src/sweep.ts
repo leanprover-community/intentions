@@ -1,7 +1,7 @@
 import * as core from '@actions/core'
 import type { getOctokit } from '@actions/github'
 import { type Config, expiryEnabled } from './config.js'
-import { formatExpiry, toStorage, MS_PER_DAY } from './ttl.js'
+import { formatExpiry, formatDuration, toStorage, warningIsDue, MS_PER_DAY } from './ttl.js'
 import { readFormField, scanParticipants } from './issueForm.js'
 import { maintainerCc } from './commands/deps.js'
 import {
@@ -151,6 +151,47 @@ async function reconcileHolders(octokit: Octokit, repoOctokit: Octokit, cfg: Con
 }
 
 /**
+ * Warn those who hold a registration that it is shortly to expire, naming them and the project's
+ * maintainers so that each is notified.
+ *
+ * A GitHub Action has no means of sending electronic mail. What it has is the mention: naming a
+ * person in a comment causes GitHub to notify that person, which for most accounts means a message
+ * by electronic mail. The warning is therefore a comment upon the issue, mentioning every assignee
+ * together with whoever is named in `notify-maintainers`.
+ *
+ * The warning cannot repair what it reports, and the expiry it concerns remains until it passes or
+ * is renewed, so without some record the sweep would repeat itself at every execution throughout
+ * the final period. The record is a hidden marker carrying the very instant warned of; a renewal to
+ * a later date therefore earns a fresh warning in its turn, whilst the same date is warned of once
+ * and once only. A failure here is reported in the log and permitted to pass, the release itself
+ * being the more important office of the sweep.
+ */
+async function warnOfApproachingExpiry(
+  repoOctokit: Octokit,
+  cfg: Config,
+  c: ClaimedItem,
+  due: Date,
+  now: Date,
+): Promise<void> {
+  const windowMs = cfg.expiryWarningMs
+  if (windowMs === null || !warningIsDue(due, now, windowMs)) return
+  if (!c.issueOwner || !c.issueRepo) return
+
+  const marker = `<!-- intentions:expiry-warning ${toStorage(due)} -->`
+  try {
+    if (await issueHasMarker(repoOctokit, c.issueOwner, c.issueRepo, c.issueNumber, marker)) return
+    const cc = maintainerCc(cfg, c.assignees)
+    await comment(repoOctokit, c.issueOwner, c.issueRepo, c.issueNumber,
+      `:alarm_clock: This registration expires **${formatExpiry(due)}**, which is less than ${formatDuration(windowMs)} away. ` +
+      `Comment \`claim <date>\` to renew it, or \`disclaim\` to release it now. ` +
+      `If nothing is done it will be released to **${cfg.statusUnclaimed}**, its assignees removed, and anybody may then take it up.${cc}\n\n${marker}`)
+    core.info(`#${c.issueNumber}: warned that the registration expires ${formatExpiry(due)}.`)
+  } catch (err) {
+    core.warning(`#${c.issueNumber}: could not warn of the approaching expiry: ${(err as Error).message}`)
+  }
+}
+
+/**
  * Report a participants field naming somebody the parser cannot read, on every card, for as long as
  * the fault persists.
  *
@@ -239,7 +280,10 @@ async function processCandidate(
       core.warning(`#${c.issueNumber}: unparseable expiry ${JSON.stringify(c.expiryText)}; skipping.`)
       return
     }
-    if (due.getTime() > now.getTime()) return // not yet due
+    if (due.getTime() > now.getTime()) {
+      await warnOfApproachingExpiry(repoOctokit, cfg, c, due, now)
+      return // not yet due
+    }
   }
 
   // ---- Compare-and-swap: re-read just before mutating ----------------------
