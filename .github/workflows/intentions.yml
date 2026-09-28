@@ -133,13 +133,13 @@ jobs:
     steps:
       - id: app-token
         if: inputs.app-id != ''
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ inputs.app-id }}  # accepts the App ID; the app-id input is deprecated
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
       # Pinned to the major tag; this reusable workflow and the action are released together.
-      - uses: leanprover-community/intentions@v1
+      - uses: leanprover-community/intentions@d302e11f5cf065a8a81de5a4d4c05eb9b7b70f70 # v1
         with:
           mode: command
           project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
@@ -176,12 +176,12 @@ jobs:
     steps:
       - id: app-token
         if: inputs.app-id != ''
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ inputs.app-id }}  # accepts the App ID; the app-id input is deprecated
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
-      - uses: leanprover-community/intentions@v1
+      - uses: leanprover-community/intentions@d302e11f5cf065a8a81de5a4d4c05eb9b7b70f70 # v1
         with:
           mode: lifecycle
           project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
@@ -217,12 +217,12 @@ jobs:
     steps:
       - id: app-token
         if: inputs.app-id != ''
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ inputs.app-id }}  # accepts the App ID; the app-id input is deprecated
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
-      - uses: leanprover-community/intentions@v1
+      - uses: leanprover-community/intentions@d302e11f5cf065a8a81de5a4d4c05eb9b7b70f70 # v1
         with:
           mode: sweep
           project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
