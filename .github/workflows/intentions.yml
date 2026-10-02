@@ -139,7 +139,7 @@ jobs:
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
       # Pinned to the major tag; this reusable workflow and the action are released together.
-      - uses: leanprover-community/intentions@d302e11f5cf065a8a81de5a4d4c05eb9b7b70f70 # v1
+      - uses: leanprover-community/intentions@542485c0a66f5bb72c388089fef227b0b679d301 # v1.7.1
         with:
           mode: command
           project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
@@ -181,7 +181,7 @@ jobs:
           client-id: ${{ inputs.app-id }}  # accepts the App ID; the app-id input is deprecated
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
-      - uses: leanprover-community/intentions@d302e11f5cf065a8a81de5a4d4c05eb9b7b70f70 # v1
+      - uses: leanprover-community/intentions@542485c0a66f5bb72c388089fef227b0b679d301 # v1.7.1
         with:
           mode: lifecycle
           project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
@@ -222,7 +222,7 @@ jobs:
           client-id: ${{ inputs.app-id }}  # accepts the App ID; the app-id input is deprecated
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
-      - uses: leanprover-community/intentions@d302e11f5cf065a8a81de5a4d4c05eb9b7b70f70 # v1
+      - uses: leanprover-community/intentions@542485c0a66f5bb72c388089fef227b0b679d301 # v1.7.1
         with:
           mode: sweep
           project-token: ${{ steps.app-token.outputs.token || secrets.project-token }}
